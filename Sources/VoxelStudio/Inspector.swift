@@ -2,6 +2,7 @@ import SwiftUI
 
 struct Inspector: View {
     @ObservedObject var model: EditorModel
+    @ObservedObject var ui: StudioUI
     @ViewState private var editingColor = false
     @ViewState private var customColor = Color.white
     @ViewState private var renamedLayer: UUID?
@@ -22,7 +23,9 @@ struct Inspector: View {
                 VStack(alignment: .leading, spacing: 0) {
                     brush
                     Rule()
-                    if model.tool != .select {
+                    sliceSection
+                    Rule()
+                    if model.tool != .select && model.tool != .extrude {
                         colorSection
                         Rule()
                     }
@@ -61,8 +64,11 @@ struct Inspector: View {
                 Text(model.tool.label).font(.system(size: 13, weight: .medium))
             }.foregroundStyle(StudioStyle.green)
             if model.tool == .select {
-                SelectionControls(model: model)
-            } else if model.tool != .pick {
+                SelectionControls(model: model, ui: ui)
+            } else if model.tool == .box {
+                DimensionStepper(title: "Depth", value: $model.shapeDepth, range: 1...Cell.gridSize)
+                    .help("Thickness measured outward from the starting face ([ and ])")
+            } else if [.add, .paint, .erase].contains(model.tool) {
                 HStack {
                     Text("Brush size").font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                     Spacer()
@@ -84,6 +90,24 @@ struct Inspector: View {
                 }
             }
         }.padding(.horizontal, 18).padding(.vertical, 16)
+    }
+
+    private var sliceSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Toggle(isOn: $model.sliceEnabled) {
+                HStack(spacing: 7) {
+                    Image(systemName: "square.3.layers.3d").foregroundStyle(StudioStyle.green)
+                    heading("Slice view")
+                }
+            }.toggleStyle(.switch).controlSize(.small)
+                .help("Hide voxels above the chosen height (Y)")
+            if model.sliceEnabled {
+                DimensionStepper(title: "Top level (Y)", value: $model.sliceLevel, range: Cell.verticalRange)
+                Slider(value: Binding(get: { Double(model.sliceLevel) }, set: { model.sliceLevel = Int($0.rounded()) }),
+                       in: Double(Cell.verticalRange.lowerBound)...Double(Cell.verticalRange.upperBound), step: 1)
+                    .controlSize(.small).accessibilityLabel("Slice height").help("Lower or raise the slice (, and .)")
+            }
+        }.padding(.horizontal, 18).padding(.vertical, 12)
     }
 
     private func mirrorAxis(_ axis: String, enabled: Binding<Bool>) -> some View {
@@ -192,7 +216,7 @@ struct Inspector: View {
 
 private struct SelectionControls: View {
     @ObservedObject var model: EditorModel
-    @ViewState private var moveBlocked = false
+    @ObservedObject var ui: StudioUI
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -209,25 +233,57 @@ private struct SelectionControls: View {
                 nudgeAxis("Y", direction: Cell(0, 1, 0))
                 nudgeAxis("Z", direction: Cell(0, 0, 1))
             }.disabled(model.selection.isEmpty)
-            if moveBlocked {
-                Text("Move blocked by occupied cells or the grid boundary.")
-                    .font(.caption).foregroundStyle(StudioStyle.secondary)
+            HStack(spacing: 5) {
+                Text("Rotate 90°").font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+                Spacer()
+                ForEach(VoxelAxis.allCases, id: \.self) { axis in
+                    let label = axis.rawValue.uppercased()
+                    Button(label) { ui.rotate(axis, in: model) }
+                        .controlSize(.small).accessibilityLabel("Rotate 90° around \(label)")
+                        .help("Rotate the selection 90° around \(label)")
+                }
+            }.disabled(model.selection.isEmpty)
+            Button { ui.duplicate(model) } label: {
+                Label("Duplicate", systemImage: "plus.square.on.square")
+            }.controlSize(.small).disabled(model.selection.isEmpty)
+                .help("Place a copy beside the selection (⌘D)")
+            if let notice = ui.selectionNotice {
+                Text(notice).font(.caption).foregroundStyle(StudioStyle.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-        }.onChange(of: model.selection) { _ in moveBlocked = false }
+        }
     }
 
     private func nudgeAxis(_ axis: String, direction: Cell) -> some View {
         HStack(spacing: 1) {
             IconControl(symbol: "minus", hint: "Move −\(axis)", size: 21, font: 9) {
-                moveBlocked = !model.moveSelection(by: Cell(-direction.x, -direction.y, -direction.z))
+                ui.nudge(Cell(-direction.x, -direction.y, -direction.z), in: model)
             }
             Text(axis).font(.system(size: 11, weight: .medium, design: .monospaced))
             IconControl(symbol: "plus", hint: "Move +\(axis)", size: 21, font: 9) {
-                moveBlocked = !model.moveSelection(by: direction)
+                ui.nudge(direction, in: model)
             }
         }.frame(maxWidth: .infinity).padding(.vertical, 2)
             .overlay(RoundedRectangle(cornerRadius: 5).stroke(StudioStyle.rule))
+    }
+}
+
+private struct DimensionStepper: View {
+    let title: String
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(title).font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+            Spacer()
+            TextField(title, value: Binding(get: { value }, set: { value = min(range.upperBound, max(range.lowerBound, $0)) }),
+                      format: .number.grouping(.never))
+                .labelsHidden().textFieldStyle(.roundedBorder).multilineTextAlignment(.trailing)
+                .font(.system(size: 11, design: .monospaced)).frame(width: 44)
+                .accessibilityLabel(title)
+            Stepper(title, value: $value, in: range).labelsHidden().controlSize(.small)
+        }
     }
 }
 

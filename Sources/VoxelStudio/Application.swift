@@ -87,7 +87,7 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             default: delta = nil
             }
             if let delta {
-                if !model.moveSelection(by: delta) { NSSound.beep() }
+                ui.nudge(delta, in: model)
                 return true
             }
         }
@@ -98,9 +98,19 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         case 11: model.tool = .paint
         case 14: model.tool = .erase
         case 34: model.tool = .pick
+        case 37: model.tool = .line
+        case 15: model.tool = .rectangle
+        case 31: model.tool = .box
+        case 7: model.tool = .extrude
+        case 40: model.tool = .fill
+        case 16: model.sliceEnabled.toggle()
+        case 43 where model.sliceEnabled: lowerSlice()
+        case 47 where model.sliceEnabled: raiseSlice()
         case 5: model.showGrid.toggle()
         case 13: model.showEdges.toggle()
         case 3: camera.reset()
+        case 33 where model.tool == .box: model.shapeDepth = max(1, model.shapeDepth - 1)
+        case 30 where model.tool == .box: model.shapeDepth = min(Cell.gridSize, model.shapeDepth + 1)
         case 33: model.brushSize = max(1, model.brushSize - 1)
         case 30: model.brushSize = min(8, model.brushSize + 1)
         default: return false
@@ -157,10 +167,25 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         item(edit, "Paste", #selector(NSText.paste(_:)), "v")
         item(edit, "Select All", #selector(NSText.selectAll(_:)), "a")
         item(edit, "Deselect Voxels", #selector(deselectVoxels), target: self)
+        edit.addItem(.separator())
+        item(edit, "Duplicate Selection", #selector(duplicateSelection), "d", target: self)
+        for axis in VoxelAxis.allCases {
+            item(edit, "Rotate 90° Around \(axis.rawValue.uppercased())", #selector(rotateSelection(_:)), target: self)
+                .representedObject = axis.rawValue
+        }
+        let tools = menu("Tools")
+        for tool in EditTool.allCases {
+            item(tools, tool.label, #selector(chooseTool(_:)), tool.shortcut.lowercased(), modifiers: [], target: self)
+                .representedObject = tool.rawValue
+        }
         let view = menu("View")
         item(view, "Show Grid", #selector(grid), target: self)
         item(view, "Show Voxel Edges", #selector(edges), target: self)
         item(view, "Frame Scene", #selector(fit), target: self)
+        view.addItem(.separator())
+        item(view, "Slice View", #selector(toggleSlice), "y", modifiers: [], target: self)
+        item(view, "Lower Slice", #selector(lowerSlice), ",", modifiers: [], target: self)
+        item(view, "Raise Slice", #selector(raiseSlice), ".", modifiers: [], target: self)
         view.addItem(.separator())
         item(view, "Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", modifiers: [.command, .control])
         let windows = menu("Window")
@@ -186,6 +211,24 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         model.selectAllOnActiveLayer()
     }
     @objc private func deselectVoxels() { model.clearSelection() }
+    @objc private func duplicateSelection() { ui.duplicate(model) }
+    @objc private func rotateSelection(_ sender: NSMenuItem) {
+        if let name = sender.representedObject as? String, let axis = VoxelAxis(rawValue: name) {
+            ui.rotate(axis, in: model)
+        }
+    }
+    @objc private func chooseTool(_ sender: NSMenuItem) {
+        if let name = sender.representedObject as? String, let tool = EditTool(rawValue: name) { model.tool = tool }
+    }
+    @objc private func toggleSlice() { model.sliceEnabled.toggle() }
+    @objc private func lowerSlice() { model.sliceLevel = max(Cell.verticalRange.lowerBound, model.sliceLevel - 1) }
+    @objc private func raiseSlice() { model.sliceLevel = min(Cell.verticalRange.upperBound, model.sliceLevel + 1) }
+
+    private var editingCanvas: Bool {
+        NSApp.keyWindow === window && window?.attachedSheet == nil && NSApp.modalWindow == nil &&
+            !(window?.firstResponder is NSTextView)
+    }
+
     @objc private func exportObj() { model.exportOBJ() }
     @objc private func undoEdit() {
         if let text = NSApp.keyWindow?.firstResponder as? NSTextView { text.undoManager?.undo() }
@@ -211,7 +254,16 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         case #selector(selectAll(_:)):
             return NSApp.keyWindow === window && window?.attachedSheet == nil &&
                 model.layers.contains { $0.id == model.activeLayerID && $0.isVisible && !$0.cells.isEmpty }
-        case #selector(deselectVoxels): return !model.selection.isEmpty
+        case #selector(deselectVoxels), #selector(duplicateSelection), #selector(rotateSelection(_:)):
+            return editingCanvas && !model.selection.isEmpty
+        case #selector(chooseTool(_:)):
+            menuItem.state = menuItem.representedObject as? String == model.tool.rawValue ? .on : .off
+            return editingCanvas
+        case #selector(toggleSlice):
+            menuItem.state = model.sliceEnabled ? .on : .off
+            return editingCanvas
+        case #selector(lowerSlice): return editingCanvas && model.sliceEnabled && model.sliceLevel > Cell.verticalRange.lowerBound
+        case #selector(raiseSlice): return editingCanvas && model.sliceEnabled && model.sliceLevel < Cell.verticalRange.upperBound
         case #selector(exportObj): return model.voxelCount > 0
         case #selector(exportVox): return model.layers.contains { !$0.cells.isEmpty }
         case #selector(grid): menuItem.state = model.showGrid ? .on : .off

@@ -3,6 +3,19 @@ import SwiftUI
 
 final class StudioUI: ObservableObject {
     @Published var showingHelp = false
+    @Published var selectionNotice: String?
+
+    func duplicate(_ model: EditorModel) {
+        selectionNotice = model.duplicateSelection() ? nil : "There is no room for a copy beside this selection."
+    }
+
+    func rotate(_ axis: VoxelAxis, in model: EditorModel) {
+        selectionNotice = model.rotateSelection(around: axis) ? nil : "Rotation blocked by an occupied voxel, the grid edge, or the slice limit."
+    }
+
+    func nudge(_ delta: Cell, in model: EditorModel) {
+        selectionNotice = model.moveSelection(by: delta) ? nil : "Move blocked by an occupied voxel, the grid edge, or the slice limit."
+    }
 }
 
 private let viewOptions = [("iso", "Isometric"), ("front", "Front"), ("top", "Top"), ("right", "Right")]
@@ -21,12 +34,14 @@ struct StudioView: View {
                 Rule(vertical: true)
                 workspace
                 Rule(vertical: true)
-                Inspector(model: model).frame(width: 256)
+                Inspector(model: model, ui: ui).frame(width: 256)
             }
             Rule()
             status
         }.foregroundStyle(StudioStyle.ink).background(StudioStyle.paper)
             .onChange(of: model.projectID) { _ in camera.reset() }
+            .onChange(of: model.selection) { _ in ui.selectionNotice = nil }
+            .onChange(of: model.revision) { _ in ui.selectionNotice = nil }
             .tint(StudioStyle.green)
     }
 
@@ -72,19 +87,36 @@ struct StudioView: View {
     }
 
     private var rail: some View {
-        VStack(spacing: 7) {
-            ForEach(EditTool.allCases, id: \.self) { tool in
-                IconControl(symbol: tool.symbol, hint: "\(tool.label) (\(tool.shortcut))", size: 40, font: 18,
-                            selected: model.tool == tool) { model.tool = tool }
-            }
-            Rule().frame(width: 24).padding(.vertical, 5)
-            IconControl(symbol: "grid", hint: "Grid (G)", size: 40, font: 16, selected: model.showGrid) { model.showGrid.toggle() }
-            IconControl(symbol: "cube.transparent", hint: "Voxel edges (W)", size: 40, font: 17,
-                        selected: model.showEdges) { model.showEdges.toggle() }
-            Spacer(minLength: 12)
-            IconControl(symbol: "questionmark.circle", hint: "Controls", size: 36, font: 17) { ui.showingHelp.toggle() }
-                .popover(isPresented: $ui.showingHelp, arrowEdge: .trailing) { HelpCard() }
-        }.padding(.vertical, 12).frame(maxHeight: .infinity).frame(width: 58).background(StudioStyle.rail)
+        GeometryReader { geometry in
+            let compact = geometry.size.height < 610
+            let size: CGFloat = compact ? 29 : 37
+            VStack(spacing: 0) {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: compact ? 2 : 4) {
+                        toolButtons([.add, .paint, .erase, .pick, .fill], size: size)
+                        railDivider
+                        toolButtons([.line, .rectangle, .box, .extrude, .select], size: size)
+                        railDivider
+                        IconControl(symbol: "grid", hint: "Grid (G)", size: size, font: 16, selected: model.showGrid) {
+                            model.showGrid.toggle()
+                        }
+                        IconControl(symbol: "cube.transparent", hint: "Voxel edges (W)", size: size, font: 17,
+                                    selected: model.showEdges) { model.showEdges.toggle() }
+                    }.frame(maxWidth: .infinity)
+                }
+                IconControl(symbol: "questionmark.circle", hint: "Controls", size: size, font: 16) { ui.showingHelp.toggle() }
+                    .popover(isPresented: $ui.showingHelp, arrowEdge: .trailing) { HelpCard() }
+            }.padding(.vertical, compact ? 5 : 10).frame(maxHeight: .infinity)
+        }.background(StudioStyle.rail)
+    }
+
+    private var railDivider: some View { Rule().frame(width: 23).padding(.vertical, 3) }
+
+    private func toolButtons(_ tools: [EditTool], size: CGFloat) -> some View {
+        ForEach(tools, id: \.self) { tool in
+            IconControl(symbol: tool.symbol, hint: "\(tool.label) (\(tool.shortcut))", size: size, font: 17,
+                        selected: model.tool == tool) { model.tool = tool }
+        }
     }
 
     private var workspace: some View {
@@ -103,6 +135,10 @@ struct StudioView: View {
                         HStack(spacing: 6) {
                             Image(systemName: "cube").font(.system(size: 10))
                             Text("\(Cell.gridSize) × \(Cell.gridSize) × \(Cell.gridSize)").font(.system(size: 10, weight: .medium, design: .monospaced))
+                            if model.sliceEnabled {
+                                Text("·")
+                                Text("Slice Y ≤ \(model.sliceLevel)").font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            }
                         }.foregroundStyle(StudioStyle.secondary)
                     }.allowsHitTesting(false)
                     Spacer(minLength: 10)
@@ -151,12 +187,16 @@ struct StudioView: View {
     private var status: some View {
         HStack(spacing: 8) {
             Circle().fill(StudioStyle.green).frame(width: 5, height: 5)
-            Text(model.tool.label).fontWeight(.medium)
-            Text("·").foregroundStyle(StudioStyle.muted)
-            Text(model.tool.instruction).foregroundStyle(StudioStyle.muted).lineLimit(1)
+            if let readout = camera.gestureReadout {
+                Text(readout).fontWeight(.medium).monospacedDigit().lineLimit(1)
+            } else {
+                Text(model.tool.label).fontWeight(.medium)
+                Text("·").foregroundStyle(StudioStyle.muted)
+                Text(model.tool.instruction).foregroundStyle(StudioStyle.muted).lineLimit(1)
+            }
             Spacer()
             Image(systemName: "cube").font(.system(size: 10))
-            Text("\(model.voxelCount.formatted(.number.locale(.current))) voxels")
+            Text("\(model.viewportCells.count.formatted()) voxels")
                 .monospacedDigit().help("Visible voxels")
             Rule(vertical: true).frame(height: 12).padding(.horizontal, 3)
             Text(camera.rendererName).font(.system(size: 10, design: .monospaced)).foregroundStyle(StudioStyle.muted)
@@ -175,25 +215,29 @@ private struct FloatingSurface: ViewModifier {
 
 private struct HelpCard: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            Text("Controls").font(.system(size: 17, weight: .semibold)).padding(.bottom, 3)
-            row("Draw", "Click or drag")
-            row("Orbit", "⌥ + drag or right-drag")
-            row("Pan", "⇧ + drag")
-            row("Zoom", "Scroll or pinch")
-            row("Frame scene", "F")
-            Rule()
-            ForEach(EditTool.allCases, id: \.self) { row($0.label, $0.shortcut) }
-            row("Brush size", "[   ]")
-            row("Toggle selected voxel", "⌘ + click")
-            row("Add to selection", "⌘ + box drag")
-            row("Nudge X / Z", "← → / ↑ ↓")
-            row("Nudge Y", "Page Up / Down")
-            row("Grid / edges", "G / W")
-            Rule()
-            Text("Select the layer you want to paint or erase in the inspector.")
-                .font(.system(size: 11)).foregroundStyle(StudioStyle.secondary).fixedSize(horizontal: false, vertical: true)
-        }.padding(18).frame(width: 272).foregroundStyle(StudioStyle.ink).background(StudioStyle.paper)
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Controls").font(.system(size: 17, weight: .semibold)).padding(.bottom, 12)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 9) {
+                    row("Draw", "Click or drag")
+                    row("Orbit", "⌥ + drag or right-drag")
+                    row("Pan", "⇧ + drag")
+                    row("Zoom", "Scroll or pinch")
+                    row("Frame scene", "F")
+                    Rule()
+                    ForEach(EditTool.allCases, id: \.self) { row($0.label, $0.shortcut) }
+                    row("Brush size / box depth", "[   ]")
+                    row("Toggle selected voxel", "⌘ + click")
+                    row("Add to selection", "⌘ + box drag")
+                    row("Nudge X / Z", "← → / ↑ ↓")
+                    row("Nudge Y", "Page Up / Down")
+                    row("Duplicate selection", "⌘D")
+                    row("Grid / edges", "G / W")
+                    row("Slice view", "Y")
+                    row("Lower / raise slice", ",   .")
+                }
+            }.frame(maxHeight: 380)
+        }.padding(18).frame(width: 282).foregroundStyle(StudioStyle.ink).background(StudioStyle.paper)
     }
     private func row(_ action: String, _ shortcut: String) -> some View {
         HStack {

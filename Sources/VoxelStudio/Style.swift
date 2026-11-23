@@ -43,6 +43,11 @@ extension EditTool {
         case .erase: return "Erase"
         case .pick: return "Eyedropper"
         case .select: return "Select"
+        case .line: return "Line"
+        case .rectangle: return "Rectangle"
+        case .box: return "Box"
+        case .extrude: return "Extrude"
+        case .fill: return "Fill"
         }
     }
     var symbol: String {
@@ -52,6 +57,11 @@ extension EditTool {
         case .erase: return "eraser"
         case .pick: return "eyedropper"
         case .select: return "rectangle.dashed"
+        case .line: return "line.diagonal"
+        case .rectangle: return "rectangle"
+        case .box: return "cube.fill"
+        case .extrude: return "arrow.up.and.line.horizontal.and.arrow.down"
+        case .fill: return "drop.fill"
         }
     }
     var shortcut: String {
@@ -61,6 +71,11 @@ extension EditTool {
         case .erase: return "E"
         case .pick: return "I"
         case .select: return "S"
+        case .line: return "L"
+        case .rectangle: return "R"
+        case .box: return "O"
+        case .extrude: return "X"
+        case .fill: return "K"
         }
     }
     var instruction: String {
@@ -70,6 +85,11 @@ extension EditTool {
         case .erase: return "Click to erase voxels on the active layer"
         case .pick: return "Click a voxel to sample its color"
         case .select: return "Click or box-select voxels. Drag a selection to move it."
+        case .line: return "Drag on the grid or a voxel face to draw a line."
+        case .rectangle: return "Drag opposite corners of a filled rectangle."
+        case .box: return "Set the depth, then drag the base of the box."
+        case .extrude: return "Drag an exposed face outward to extend it."
+        case .fill: return "Click to recolor connected voxels of the same color."
         }
     }
 }

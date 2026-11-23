@@ -26,6 +26,9 @@ The editor opens with **Northern Lighthouse**, a five-layer scene you can edit i
 | Action | Control |
 | --- | --- |
 | Add / paint / erase / sample color / select | `V` / `B` / `E` / `I` / `S` |
+| Line / rectangle / box | `L` / `R` / `O` |
+| Extrude / flood fill | `X` / `K` |
+| Toggle horizontal slice / lower or raise the cut | `Y` / `,` or `.` |
 | Decrease / increase brush size | `[` / `]` (1–8 voxels) |
 | Orbit | Right-drag or `⌥` + drag |
 | Pan | `⇧` + drag |
@@ -45,6 +48,26 @@ With **Add**, **Paint**, or **Erase** active, turn on **Mirror X**, **Mirror Z**
 Press **S** and click a voxel on the active layer. Drag a box to select a region, including voxels behind the front row. **⌘-click** toggles individual voxels and **⌘-drag** adds a box to the selection. **⌘A** selects the editable voxels on the active layer.
 
 Drag a selected voxel along the plane of the face you grabbed. For a one-voxel move, use the **X**, **Y**, or **Z** controls in the inspector. The left and right arrows move along X, the up and down arrows move along Z, and **Page Up / Page Down** move along Y. A move is blocked if any voxel would leave the grid or collide with another visible voxel. **Esc** cancels a drag or clears an idle selection. **⌘Z** undoes a completed move.
+
+To reuse a detail, select it and press **⌘D**. Forma places the copy next to the original and selects the copy so you can move it immediately. In the inspector, choose **X**, **Y**, or **Z** to turn the selection 90° around that axis. A completed duplication or rotation takes one undo step.
+
+## Shapes, extrusion, and fill
+
+- **Line (L)** draws between two cells on the face or work plane where you start dragging.
+- **Rectangle (R)** fills the area between two opposite corners on that plane.
+- **Box (O)** uses the same drag for its footprint. Set the depth in the inspector before dragging to extend the box outward from the starting face. The live readout shows the dimensions before you release. Shapes add voxels in the active color and preserve existing voxels.
+- **Extrude (X)** pulls a connected patch of exposed faces outward. Drag in the direction of the face normal and release at the desired depth. When looking straight at the face, drag upward. Each column inherits the ink of its starting voxel. An occupied destination blocks the entire extrusion.
+- **Fill (K)** replaces a connected region on the active layer with the active ink. Voxels must share a face and match the starting ink, including its material. The fill stops at empty space, other inks, and layer boundaries.
+
+Each shape or extrusion can place up to 262,144 voxels in one action. Press **Esc** to discard the preview. A completed shape, extrusion, or fill takes one undo step.
+
+## Work in a horizontal slice
+
+Press **Y** to enable the cut, then choose a height in the inspector or use **,** and **.** to step down or up. Voxels above that height disappear from the viewport so you can reach an interior. In empty space, the cut height becomes the drawing plane. Turn off the cut to see the entire scene again.
+
+Try a cut at **Y = 4** in the five-layer cottage project to reveal the table inside. [Open the Keeper’s Cottage example (VXL)](Media/Keepers-Cottage.vxl)
+
+PNG export follows the current cut. Native projects and model exports preserve geometry above it.
 
 ## File formats
 
@@ -70,7 +93,7 @@ swift run Forma   # Launch the editor
 swift test        # Run the editing, file-format, and PNG export tests
 ```
 
-The interface uses SwiftUI and AppKit. The viewport uses MetalKit with a Core Graphics fallback when Metal is unavailable. The tests cover mirrored strokes, selection moves and undo, PNG dimensions and layer visibility, and MagicaVoxel round trips.
+The interface uses SwiftUI and AppKit. The viewport uses MetalKit with a Core Graphics fallback when Metal is unavailable. The tests cover brush and shape edits, selection transforms and undo, layer and slice visibility, PNG rendering, and MagicaVoxel round trips.
 
 ## License
 
