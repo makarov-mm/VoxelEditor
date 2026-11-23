@@ -4,7 +4,7 @@ Forma is a native Swift and Metal editor for building, painting, and editing vox
 
 ![Northern Lighthouse in Forma, with a spruce ready to paste on the Vegetation layer](Media/Northern-Lighthouse.png)
 
-**Cape Meridian lighthouse.** This 1:42 time-lapse starts with an empty grid and builds a seven-layer coastal scene in Forma. The camera moves in for the keeper’s cottage and lantern gallery, then orbits the finished headland. [Watch the film (MP4)](Media/Cape-Meridian.mp4) · [Open the scene in Forma (VXL)](Media/Cape-Meridian.vxl) · [Get the MagicaVoxel model (VOX)](Media/Cape-Meridian.vox)
+**Cape Meridian lighthouse.** Build a lighthouse, keeper’s cottage, and jetty from an empty grid in Forma. [Watch the screen recording (MP4)](Media/Cape-Meridian.mp4) · [Open the scene in Forma (VXL)](Media/Cape-Meridian.vxl) · [Get the MagicaVoxel model (VOX)](Media/Cape-Meridian.vox)
 
 **Flowering cactus.** A 35-second demo shows how to build a flowering cactus from an empty grid, paint its details, and orbit the finished model. [Watch the demo (MP4)](Media/Drawing-demo.mp4) · [Get the finished model (VOX)](Media/Desert-Bloom.vox)
 
