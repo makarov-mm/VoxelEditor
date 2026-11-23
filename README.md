@@ -1,42 +1,62 @@
-# VoxelEditor
+# Forma — macOS voxel editor
 
-Forma is a native voxel editor for macOS 13 and later, written in Swift with SwiftUI, AppKit, and Metal. The interface and viewport follow the Mac’s light or dark appearance. When Metal is unavailable, the viewport uses Core Graphics.
+Forma is a native Swift and Metal editor for building, painting, and editing voxel models on a 256 × 256 × 256 grid. Organize a scene into layers, sample colors directly from a model, and exchange `.vox` files with MagicaVoxel. The canvas and inspector follow the Mac’s light or dark appearance.
 
-## Run
+**See it in action.** A 35-second demo shows how to build a flowering cactus from an empty grid, paint its details, and orbit the finished model. [Watch the demo (MP4)](Media/Drawing-demo.mp4) · [Get the finished model (VOX)](Media/Desert-Bloom.vox)
 
-Open **build/Forma.app**, or build it from this folder with Xcode 15 or later (or the corresponding Command Line Tools).
+## Build and run
+
+The app runs on macOS 13 or later. To build from source, use Xcode 15 or later, or the corresponding Xcode Command Line Tools. There are no external package dependencies.
 
 ```sh
+git clone https://github.com/makarov-mm/VoxelEditor.git
+cd VoxelEditor
 ./build-app.sh
 open build/Forma.app
 ```
 
-The build script creates a universal, ad-hoc-signed application for Apple Silicon and Intel. Open `Package.swift` in Xcode to develop the app. `swift run Forma` starts the editor and `swift test` runs the format tests. The editor has no external package dependencies.
+The script builds a universal `Forma.app` for Apple Silicon and Intel and signs it locally. You can copy the bundle to Applications.
 
-## Draw
+## Start drawing
 
-The editor opens with **Northern Lighthouse**, an editable scene with five layers. Press **⌘N** for a blank grid. Select a layer, choose a palette color, and click or drag across the floor or an existing face. Paint and erase affect the active layer. The eyedropper samples any visible layer. Undo reverses a whole stroke.
+The editor opens with **Northern Lighthouse**, a five-layer scene you can edit immediately. To start from scratch, press **⌘N**, choose a color in the inspector, and click the floor to place your first voxel. Click an exposed face to build outward. Drag to draw a stroke, then press **⌘Z** to undo the whole stroke.
 
 | Action | Control |
 | --- | --- |
-| Add, paint, erase, eyedropper | `V`, `B`, `E`, `I` |
-| Brush size (1–8) | `[` and `]` |
+| Add / paint / erase / sample color | `V` / `B` / `E` / `I` |
+| Decrease / increase brush size | `[` / `]` (1–8 voxels) |
 | Orbit | Right-drag or `⌥` + drag |
 | Pan | `⇧` + drag |
 | Zoom | Scroll or pinch |
-| Frame the scene | `F` |
-| Toggle the floor grid or voxel edges | `G` or `W` |
+| Fit the scene in the viewport | `F` |
+| Toggle floor grid / voxel edges | `G` / `W` |
 | Undo / redo | `⌘Z` / `⇧⌘Z` |
 
-Watch a flowering cactus take shape from the first voxel to the final camera orbit, then open the finished model to edit it. [Drawing demo (MP4)](Media/Drawing-demo.mp4) · [Desert Bloom model (VOX)](Media/Desert-Bloom.vox)
+Choose the active layer in the inspector before painting or erasing. The eyedropper can sample any visible layer.
 
-## Open and save models
+## File formats
 
-- **MagicaVoxel → Forma.** Use **File → Open…** (`⌘O`) or **File → Import MagicaVoxel (.vox)…** (`⇧⌘I`). Opening a `.vox` creates an editable project. Each scene object gets a layer, with its transform applied to the voxel positions.
-- **Forma → MagicaVoxel.** Choose **File → Export MagicaVoxel (.vox)…** and open the result in MagicaVoxel. All layers are exported, including hidden ones. The file carries palette colors, layer names, visibility, and supported material metadata.
-- **Native projects.** Use **Save** (`⌘S`) to keep working in `.vxl`, Forma’s versioned JSON format. Older Forma projects still open.
-- **Meshes.** **File → Export Wavefront OBJ…** writes the visible surface and a companion `.mtl` with its colors. Keep those files together.
+| Format | Open | Save or export | Contents |
+| --- | --- | --- | --- |
+| Forma project (`.vxl`) | **File → Open…** | **Save** (`⌘S`) or **Save As…** | Editable layers, visibility, voxels, and palette in versioned JSON |
+| MagicaVoxel (`.vox`) | **File → Open…** or **Import MagicaVoxel (.vox)…** | **File → Export MagicaVoxel (.vox)…** | Static models, placement, colors, and supported material metadata |
+| Wavefront (`.obj` + `.mtl`) | — | **File → Export Wavefront OBJ…** | Mesh of the visible surface and its color materials. Keep the two files together. |
 
-The VOX reader accepts versions 150 and 200 and the writer produces version 150. Scenes can span up to 256 cells on each axis, with up to 128 editable objects and two million imported or exported voxels. VOX permits 255 occupied palette entries. If an export would exceed that limit, the editor reports it before writing.
+Opening a `.vox` creates an editable Forma project. Use **⌘S** to keep a native copy, or **Export MagicaVoxel (.vox)…** to take the edited model back to MagicaVoxel. VOX export includes hidden layers and preserves their visibility.
 
-Forma edits static geometry. For animated scene nodes it imports their earliest frame. The viewport shows opaque RGB colors. Export rebuilds a static scene. Keep the original MagicaVoxel project for its animation tracks, cameras, and render settings.
+Forma reads VOX versions 150 and 200 and writes version 150. A scene can span 256 cells on each axis, with up to 128 objects, two million voxels, and 255 occupied palette entries for VOX exchange. Animated scene nodes open at their earliest frame. Keep the original MagicaVoxel file for animation tracks, cameras, and render settings.
+
+## Development
+
+Open `Package.swift` in Xcode, or use Swift Package Manager from the repository root.
+
+```sh
+swift run Forma   # Launch the editor
+swift test        # Run the MagicaVoxel import and export tests
+```
+
+The interface uses SwiftUI and AppKit. The viewport uses MetalKit with a Core Graphics fallback when Metal is unavailable. The format tests cover palette and coordinate round trips, scene transforms, hidden layers, malformed files, and native saves after import.
+
+## License
+
+Forma is available under the [MIT License](LICENSE).
