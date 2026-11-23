@@ -26,6 +26,7 @@ private struct CanvasColors {
 }
 
 final class OrbitCamera: ObservableObject {
+    weak var viewport: StudioViewportSurface?
     @Published private(set) var zoomPercent = 100
     @Published private(set) var viewKey = "iso"
     @Published fileprivate(set) var rendererName = "…"
@@ -268,6 +269,20 @@ private func pickCell(at point: CGPoint, projection: SceneProjection, voxels: [C
     return PickResult()
 }
 
+private struct SelectionDrag {
+    let start: CGPoint
+    let hit: Cell?
+    let additive: Bool
+    let layerID: UUID
+    let moveAxis: Int?
+    let projection: SceneProjection
+    var moved = false
+}
+
+private let selectionTint = V4(0.12, 0.68, 0.91, 0.46)
+private let validMoveTint = V4(0.24, 0.91, 0.59, 0.53)
+private let invalidMoveTint = V4(1.00, 0.25, 0.20, 0.58)
+
 final class StudioViewportSurface: NSView {
     private var model: EditorModel
     private var camera: OrbitCamera
@@ -284,7 +299,16 @@ final class StudioViewportSurface: NSView {
     private var hoverPoint: CGPoint?
     private var strokeVoxels: [Cell:Ink]?
     private var lastStrokePoint: CGPoint?
-    private enum Gesture { case paint, orbit, pan }
+    private let marquee = NSView()
+    private var selectionDrag: SelectionDrag?
+    private var displayedSelection = Set<Cell>()
+    private var selectionFaces = [VoxelFace]()
+    fileprivate var moveOffset = Cell(0,0,0)
+    fileprivate var moveAllowed = false
+    fileprivate var hasMovePreview: Bool { moveOffset != Cell(0,0,0) }
+    fileprivate var moveTint: V4 { moveAllowed ? validMoveTint : invalidMoveTint }
+    private enum Gesture { case paint, orbit, pan, select }
+    var projectTitle: String { model.title }
     private var gesture: Gesture?
     override var acceptsFirstResponder: Bool { true }
 
@@ -312,6 +336,13 @@ final class StudioViewportSurface: NSView {
                 NSLog("VoxelStudio Metal initialization: %@", error.localizedDescription)
             }
         }
+        marquee.wantsLayer = true
+        marquee.layer?.borderWidth = 1
+        marquee.layer?.borderColor = NSColor.systemTeal.cgColor
+        marquee.layer?.backgroundColor = NSColor.systemTeal.withAlphaComponent(0.16).cgColor
+        marquee.isHidden = true
+        addSubview(marquee)
+        camera.viewport = self
         let rendererName = painter == nil ? "Core Graphics" : "Metal"
         DispatchQueue.main.async { [weak camera] in camera?.rendererName = rendererName }
         synchronize(model: model, camera: camera)
@@ -323,18 +354,39 @@ final class StudioViewportSurface: NSView {
     func synchronize(model: EditorModel, camera: OrbitCamera) {
         self.model = model
         self.camera = camera
+        if gesture == .select && (model.tool != .select || revision != model.revision ||
+                                  selectionDrag?.layerID != model.activeLayerID || displayedSelection != model.selection ||
+                                  requestedFrame != camera.framing) {
+            cancelSelectionDrag()
+        }
         if revision != model.revision {
             revision = model.revision
             voxels = model.visibleCells
             scene = SceneGeometry(voxels)
-            if let painter { painter.update(scene) }
-            else { softwareShadow = makeShadowImage() }
+            softwareShadow = nil
+            painter?.update(scene)
         }
+        updateSelectionShell()
         if requestedFrame != camera.framing {
             requestedFrame = camera.framing
             frameScene()
         }
         redraw()
+    }
+
+    private func updateSelectionShell() {
+        let cells = model.tool == .select ? model.selection : []
+        guard cells != displayedSelection else { return }
+        displayedSelection = cells
+        selectionFaces.removeAll(keepingCapacity: !cells.isEmpty)
+        for c in cells {
+            let pos = SIMD3(c.x,c.y,c.z)
+            for (side, n) in normalOffsets.enumerated() where !cells.contains(cell(pos &+ n)) {
+                selectionFaces.append(VoxelFace(base: V4(float3(pos), Float(side)), color: selectionTint,
+                                                ao: V4(repeating: 1), extent: V4(1,1,1,2)))
+            }
+        }
+        painter?.setSelection(selectionFaces)
     }
 
     private func frameScene() {
@@ -375,20 +427,22 @@ final class StudioViewportSurface: NSView {
     fileprivate var edgesEnabled: Bool { model.showEdges }
 
     fileprivate var hoverFaces: [VoxelFace] {
-        guard let point = hoverPoint, gesture != .orbit, gesture != .pan else { return [] }
+        guard let point = hoverPoint, gesture != .orbit, gesture != .pan, gesture != .select else { return [] }
         let pick = pickCell(at: point, projection: projection, voxels: strokeVoxels ?? voxels)
-        guard let box = model.brushBounds(hit: pick.hit, adjacent: pick.adjacent) else { return [] }
-        let c = box.min
-        let extent = V4(Float(box.max.x - c.x + 1), Float(box.max.y - c.y + 1), Float(box.max.z - c.z + 1), 0)
         let color: V4
         switch model.tool {
         case .add, .paint: color = V4(model.ink.r, model.ink.g, model.ink.b, 0.34)
         case .erase: color = V4(0.96,0.28,0.23,0.36)
         case .pick: color = V4(0.95,0.94,0.85,0.3)
+        case .select: return []
         }
-        return (0..<6).map { side in
-            VoxelFace(base: V4(Float(c.x), Float(c.y), Float(c.z), Float(side)),
-                      color: color, ao: V4(repeating: 1), extent: extent)
+        return model.brushBoxes(hit: pick.hit, adjacent: pick.adjacent).flatMap { box in
+            let c = box.min
+            let extent = V4(Float(box.max.x - c.x + 1), Float(box.max.y - c.y + 1), Float(box.max.z - c.z + 1), 0)
+            return (0..<6).map { side in
+                VoxelFace(base: V4(Float(c.x), Float(c.y), Float(c.z), Float(side)),
+                          color: color, ao: V4(repeating: 1), extent: extent)
+            }
         }
     }
 
@@ -424,7 +478,19 @@ final class StudioViewportSurface: NSView {
         window?.makeFirstResponder(self)
         if e.modifierFlags.contains(.shift) { gesture = .pan }
         else if e.modifierFlags.contains(.option) { gesture = .orbit }
-        else {
+        else if model.tool == .select {
+            let start = point(e)
+            let pick = pickCell(at: start, projection: projection, voxels: voxels)
+            let additive = e.modifierFlags.contains(.command)
+            var moveAxis: Int?
+            if !additive, let hit = pick.hit, let adjacent = pick.adjacent, model.selection.contains(hit) {
+                moveAxis = hit.x != adjacent.x ? 0 : hit.y != adjacent.y ? 1 : 2
+            }
+            selectionDrag = SelectionDrag(start: start, hit: pick.hit, additive: additive,
+                                          layerID: model.activeLayerID, moveAxis: moveAxis, projection: projection)
+            gesture = .select
+            redraw()
+        } else {
             gesture = .paint
             strokeVoxels = voxels
             model.beginStroke()
@@ -433,10 +499,15 @@ final class StudioViewportSurface: NSView {
     }
 
     override func rightMouseDown(with e: NSEvent) {
+        if gesture == .select { cancelSelectionDrag() }
         gesture = e.modifierFlags.contains(.shift) ? .pan : .orbit
         redraw()
     }
-    override func otherMouseDown(with e: NSEvent) { gesture = .pan; redraw() }
+    override func otherMouseDown(with e: NSEvent) {
+        if gesture == .select { cancelSelectionDrag() }
+        gesture = .pan
+        redraw()
+    }
 
     private func applyStroke(at p: CGPoint) {
         let from = lastStrokePoint ?? p
@@ -454,9 +525,76 @@ final class StudioViewportSurface: NSView {
         synchronize(model: model, camera: camera)
     }
 
+    private func updateSelectionDrag(at p: CGPoint) {
+        guard var drag = selectionDrag else { return }
+        guard drag.moved || hypot(p.x - drag.start.x, p.y - drag.start.y) >= 3 else { return }
+        drag.moved = true
+        selectionDrag = drag
+        if let axis = drag.moveAxis {
+            let proj = drag.projection
+            let screenDelta = proj.planePoint(p) - proj.planePoint(drag.start)
+            // Intersect both pointer rays with the starting face plane. Its normal coordinate stays fixed.
+            guard abs(proj.eye[axis]) > 0.00001 else { return }
+            var world = screenDelta - proj.eye * (screenDelta[axis] / proj.eye[axis])
+            world[axis] = 0
+            let delta = Cell(Int(world.x.rounded()), Int(world.y.rounded()), Int(world.z.rounded()))
+            if delta != moveOffset {
+                moveOffset = delta
+                moveAllowed = model.canMoveSelection(by: delta)
+            }
+        } else {
+            marquee.frame = CGRect(x: min(p.x, drag.start.x), y: min(p.y, drag.start.y),
+                                   width: abs(p.x - drag.start.x), height: abs(p.y - drag.start.y))
+            marquee.isHidden = false
+        }
+        redraw()
+    }
+
+    private func finishSelection(at p: CGPoint) {
+        updateSelectionDrag(at: p)
+        guard let drag = selectionDrag else { return }
+        let offset = moveOffset, allowed = moveAllowed, rect = marquee.frame
+        cancelSelectionDrag()
+        if !drag.moved {
+            if let hit = drag.hit { model.select([hit], mode: drag.additive ? .toggle : .replace) }
+            else if !drag.additive { model.clearSelection() }
+        } else if drag.moveAxis != nil {
+            if allowed { _ = model.moveSelection(by: offset) }
+        } else if let layer = model.layers.first(where: { $0.id == model.activeLayerID && $0.isVisible }) {
+            var captured = Set<Cell>()
+            for c in layer.cells.keys {
+                let center = V3(Float(c.x) + 0.5, Float(c.y) + 0.5, Float(c.z) + 0.5)
+                if rect.contains(drag.projection.project(center)) { captured.insert(c) }
+            }
+            model.select(captured, mode: drag.additive ? .add : .replace)
+        }
+        synchronize(model: model, camera: camera)
+    }
+
+    private func cancelSelectionDrag() {
+        selectionDrag = nil
+        moveOffset = Cell(0,0,0)
+        moveAllowed = false
+        marquee.isHidden = true
+        if gesture == .select { gesture = nil }
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        if gesture == .select { cancelSelectionDrag() }
+        else if model.tool == .select { model.clearSelection() }
+        else { super.cancelOperation(sender); return }
+        synchronize(model: model, camera: camera)
+    }
+
+    override func keyDown(with e: NSEvent) {
+        if e.keyCode == 53, model.tool == .select { cancelOperation(self) }
+        else { super.keyDown(with: e) }
+    }
+
     override func mouseDragged(with e: NSEvent) {
         switch gesture {
         case .paint: applyStroke(at: point(e))
+        case .select: updateSelectionDrag(at: point(e))
         case .pan:
             let v = projection
             camera.pan -= (v.right * Float(e.deltaX) - v.up * Float(e.deltaY)) / v.scale
@@ -471,6 +609,7 @@ final class StudioViewportSurface: NSView {
     override func otherMouseDragged(with e: NSEvent) { mouseDragged(with: e) }
     override func mouseUp(with e: NSEvent) {
         if gesture == .paint { model.endStroke() }
+        if gesture == .select { finishSelection(at: point(e)) }
         lastStrokePoint = nil
         strokeVoxels = nil
         gesture = nil
@@ -480,11 +619,13 @@ final class StudioViewportSurface: NSView {
     override func rightMouseUp(with e: NSEvent) { mouseUp(with: e) }
     override func otherMouseUp(with e: NSEvent) { mouseUp(with: e) }
     override func scrollWheel(with e: NSEvent) {
+        if gesture == .select { cancelSelectionDrag() }
         let amount = Float(e.scrollingDeltaY) * (e.hasPreciseScrollingDeltas ? 0.009 : 0.12)
         camera.zoom(by: exp(max(-1, min(1, amount))))
         redraw()
     }
     override func magnify(with e: NSEvent) {
+        if gesture == .select { cancelSelectionDrag() }
         camera.zoom(by: max(0.5, 1 + Float(e.magnification)))
         redraw()
     }
@@ -505,6 +646,12 @@ final class StudioViewportSurface: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard metalView == nil, let ctx = NSGraphicsContext.current?.cgContext else { return }
+        drawScene(in: ctx, includeEditorOverlays: true)
+    }
+
+    func drawScene(in ctx: CGContext, includeEditorOverlays: Bool) {
+        if !includeEditorOverlays { synchronize(model: model, camera: camera) }
+        if softwareShadow == nil { softwareShadow = makeShadowImage() }
         let projection = self.projection
         let colors = self.colors
         let bg = colors.background
@@ -539,16 +686,36 @@ final class StudioViewportSurface: NSView {
             }
         }
         // Painter's order is exact for axis-aligned grid faces viewed orthographically.
-        let faces = (scene.faces + hoverFaces).filter { face in
-            simd_dot(float3(normalOffsets[Int(face.base.w)]), projection.eye) > 0.00001
-        }.sorted { a, b in
-            func depth(_ f: VoxelFace) -> Float {
-                let extent = V3(f.extent.x, f.extent.y, f.extent.z)
-                let center = origin(f) + (0.5 + float3(normalOffsets[Int(f.base.w)]) * 0.5) * extent
-                return simd_dot(center, projection.eye) + (f.color.w < 1 ? 0.018 : 0)
+        var geometry = scene.faces
+        var invalidPreview = [VoxelFace]()
+        if includeEditorOverlays {
+            geometry.append(contentsOf: selectionFaces)
+            geometry.append(contentsOf: hoverFaces)
+            if hasMovePreview {
+                let delta = V4(Float(moveOffset.x), Float(moveOffset.y), Float(moveOffset.z), 0)
+                let preview = selectionFaces.map { f -> VoxelFace in
+                    var ghost = f
+                    ghost.base += delta
+                    ghost.color = moveTint
+                    return ghost
+                }
+                if moveAllowed { geometry.append(contentsOf: preview) }
+                else { invalidPreview = preview }
             }
-            return depth(a) < depth(b)
         }
+        func visibleFaces(_ faces: [VoxelFace]) -> [VoxelFace] {
+            faces.filter { face in
+                simd_dot(float3(normalOffsets[Int(face.base.w)]), projection.eye) > 0.00001
+            }.sorted { a, b in
+                func depth(_ f: VoxelFace) -> Float {
+                    let extent = V3(f.extent.x, f.extent.y, f.extent.z)
+                    let center = origin(f) + (0.5 + float3(normalOffsets[Int(f.base.w)]) * 0.5) * extent
+                    return simd_dot(center, projection.eye) + (f.color.w < 1 ? 0.018 : 0)
+                }
+                return depth(a) < depth(b)
+            }
+        }
+        let faces = visibleFaces(geometry) + visibleFaces(invalidPreview)
         ctx.setLineJoin(.round)
         ctx.setShouldAntialias(false)
         for face in faces {
@@ -567,7 +734,7 @@ final class StudioViewportSurface: NSView {
             if model.showEdges || isHover {
                 ctx.addPath(path)
                 ctx.setLineWidth(isHover ? 1.4 : 0.52)
-                let edge = isHover ? colors.hoverEdge : V4(0.15,0.17,0.17,1)
+                let edge = face.extent.w == 2 ? face.color : isHover ? colors.hoverEdge : V4(0.15,0.17,0.17,1)
                 ctx.setStrokeColor(red: CGFloat(edge.x), green: CGFloat(edge.y), blue: CGFloat(edge.z),
                                    alpha: isHover ? 0.94 : 0.2)
                 ctx.strokePath()
@@ -582,6 +749,7 @@ private struct MetalUniforms {
     var eye: V4
     var target: V4
     var flags, background, grid, hoverEdge, shadowMap, volume: V4
+    var overlayOffset = V4.zero, overlayTint = V4.zero
 }
 
 private final class MetalPainter: NSObject, MTKViewDelegate {
@@ -591,6 +759,9 @@ private final class MetalPainter: NSObject, MTKViewDelegate {
     private let floorPipeline: MTLRenderPipelineState
     private let solidDepth: MTLDepthStencilState
     private let hoverDepth: MTLDepthStencilState
+    private let throughDepth: MTLDepthStencilState
+    private var selectedInstances: MTLBuffer?
+    private var selectedCount = 0
     private let device: MTLDevice
     private var instances: MTLBuffer?
     private var count = 0
@@ -630,7 +801,18 @@ private final class MetalPainter: NSObject, MTKViewDelegate {
         depth.isDepthWriteEnabled = false
         guard let overlays = device.makeDepthStencilState(descriptor: depth) else { throw error }
         hoverDepth = overlays
+        depth.depthCompareFunction = .always
+        guard let through = device.makeDepthStencilState(descriptor: depth) else { throw error }
+        throughDepth = through
         super.init()
+    }
+
+    func setSelection(_ faces: [VoxelFace]) {
+        selectedCount = faces.count
+        selectedInstances = faces.withUnsafeBytes { bytes in
+            guard !bytes.isEmpty, let start = bytes.baseAddress else { return nil }
+            return device.makeBuffer(bytes: start, length: bytes.count, options: .storageModeShared)
+        }
     }
 
     func update(_ scene: SceneGeometry) {
@@ -693,6 +875,19 @@ private final class MetalPainter: NSObject, MTKViewDelegate {
                 }
             }
         }
+        if let selectedInstances, selectedCount > 0 {
+            enc.setDepthStencilState(hoverDepth)
+            enc.setVertexBuffer(selectedInstances, offset: 0, index: 0)
+            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: selectedCount)
+            if surface.hasMovePreview {
+                let d = surface.moveOffset
+                u.overlayOffset = V4(Float(d.x),Float(d.y),Float(d.z),0)
+                u.overlayTint = surface.moveTint
+                enc.setVertexBytes(&u, length: MemoryLayout<MetalUniforms>.stride, index: 1)
+                enc.setDepthStencilState(surface.moveAllowed ? hoverDepth : throughDepth)
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: selectedCount)
+            }
+        }
         enc.endEncoding()
         command.present(drawable)
         command.commit()
@@ -702,13 +897,14 @@ private final class MetalPainter: NSObject, MTKViewDelegate {
     #include <metal_stdlib>
     using namespace metal;
 
-    struct Uniforms { float4 right, up, eye, target, flags, background, grid, hoverEdge, shadowMap, volume; };
+    struct Uniforms { float4 right, up, eye, target, flags, background, grid, hoverEdge, shadowMap, volume, overlayOffset, overlayTint; };
     struct Face { float4 base, color, ao, extent; };
     struct VertexOut {
         float4 position [[position]];
         float4 color;
         float2 uv;
         float facing;
+        float selection;
     };
     struct GroundOut { float4 position [[position]]; float2 ndc; };
     constant float3 normals[] = {float3(1,0,0),float3(-1,0,0),float3(0,1,0),
@@ -726,7 +922,8 @@ private final class MetalPainter: NSObject, MTKViewDelegate {
         float3 offset = side < 2 ? float3(0,uv.y,uv.x)
                       : side < 4 ? float3(uv.x,0,uv.y) : float3(uv,0);
         if (side % 2 == 0) offset += normals[side];
-        float3 world = f.base.xyz + offset * f.extent.xyz;
+        float3 world = f.base.xyz + offset * f.extent.xyz + u.overlayOffset.xyz;
+        if (u.overlayTint.a > 0.0) f.color = u.overlayTint;
         float3 p = world - u.target.xyz;
         float depth = dot(world - float3(0,u.volume.z,0),u.eye.xyz)/u.volume.w;
         VertexOut out;
@@ -735,6 +932,7 @@ private final class MetalPainter: NSObject, MTKViewDelegate {
         out.color = float4(saturate(f.color.rgb * lighting[side] * f.ao[corner]),f.color.a);
         out.uv = uv;
         out.facing = dot(normals[side],u.eye.xyz);
+        out.selection = f.extent.w;
         return out;
     }
 
@@ -746,7 +944,7 @@ private final class MetalPainter: NSObject, MTKViewDelegate {
         float thickness = (hover ? 1.1 : 0.33) * u.flags.z;
         float edge = 1.0 - smoothstep(thickness * 0.25, thickness+0.5, min(border.x,border.y));
         float edgeAmount = hover ? 0.8 : 0.18*u.flags.y;
-        float3 outline = hover ? u.hoverEdge.rgb : float3(0.14,0.17,0.16);
+        float3 outline = in.selection == 2.0 ? in.color.rgb : hover ? u.hoverEdge.rgb : float3(0.14,0.17,0.16);
         return float4(mix(in.color.rgb,outline,edge*edgeAmount),
                       hover ? mix(in.color.a,0.98,edge) : 1.0);
     }

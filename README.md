@@ -25,7 +25,7 @@ The editor opens with **Northern Lighthouse**, a five-layer scene you can edit i
 
 | Action | Control |
 | --- | --- |
-| Add / paint / erase / sample color | `V` / `B` / `E` / `I` |
+| Add / paint / erase / sample color / select | `V` / `B` / `E` / `I` / `S` |
 | Decrease / increase brush size | `[` / `]` (1–8 voxels) |
 | Orbit | Right-drag or `⌥` + drag |
 | Pan | `⇧` + drag |
@@ -36,13 +36,26 @@ The editor opens with **Northern Lighthouse**, a five-layer scene you can edit i
 
 Choose the active layer in the inspector before painting or erasing. The eyedropper can sample any visible layer.
 
+## Mirror strokes
+
+With **Add**, **Paint**, or **Erase** active, turn on **Mirror X**, **Mirror Z**, or both in the inspector. The brush preview shows where the stroke will land. Each axis reflects across the middle of the grid, between cells −1 and 0. A single undo reverses the entire stroke, including its reflections.
+
+## Select and move voxels
+
+Press **S** and click a voxel on the active layer. Drag a box to select a region, including voxels behind the front row. **⌘-click** toggles individual voxels and **⌘-drag** adds a box to the selection. **⌘A** selects the editable voxels on the active layer.
+
+Drag a selected voxel along the plane of the face you grabbed. For a one-voxel move, use the **X**, **Y**, or **Z** controls in the inspector. The left and right arrows move along X, the up and down arrows move along Z, and **Page Up / Page Down** move along Y. A move is blocked if any voxel would leave the grid or collide with another visible voxel. **Esc** cancels a drag or clears an idle selection. **⌘Z** undoes a completed move.
+
 ## File formats
 
 | Format | Open | Save or export | Contents |
 | --- | --- | --- | --- |
 | Forma project (`.vxl`) | **File → Open…** | **Save** (`⌘S`) or **Save As…** | Editable layers, visibility, voxels, and palette in versioned JSON |
 | MagicaVoxel (`.vox`) | **File → Open…** or **Import MagicaVoxel (.vox)…** | **File → Export MagicaVoxel (.vox)…** | Static models, placement, colors, and supported material metadata |
+| Scene image (`.png`) | — | **File → Export Scene PNG…** (`⇧⌘P`) | Visible layers from the current camera, with the current appearance, floor grid, and edge settings. Editing overlays are omitted. |
 | Wavefront (`.obj` + `.mtl`) | — | **File → Export Wavefront OBJ…** | Mesh of the visible surface and its color materials. Keep the two files together. |
+
+PNG export renders at twice the viewport’s point dimensions, up to 4096 pixels on its longest side.
 
 Opening a `.vox` creates an editable Forma project. Use **⌘S** to keep a native copy, or **Export MagicaVoxel (.vox)…** to take the edited model back to MagicaVoxel. VOX export includes hidden layers and preserves their visibility.
 
@@ -54,10 +67,10 @@ Open `Package.swift` in Xcode, or use Swift Package Manager from the repository 
 
 ```sh
 swift run Forma   # Launch the editor
-swift test        # Run the MagicaVoxel import and export tests
+swift test        # Run the editing, file-format, and PNG export tests
 ```
 
-The interface uses SwiftUI and AppKit. The viewport uses MetalKit with a Core Graphics fallback when Metal is unavailable. The format tests cover palette and coordinate round trips, scene transforms, hidden layers, malformed files, and native saves after import.
+The interface uses SwiftUI and AppKit. The viewport uses MetalKit with a Core Graphics fallback when Metal is unavailable. The tests cover mirrored strokes, selection moves and undo, PNG dimensions and layer visibility, and MagicaVoxel round trips.
 
 ## License
 

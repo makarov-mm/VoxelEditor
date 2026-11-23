@@ -22,8 +22,10 @@ struct Inspector: View {
                 VStack(alignment: .leading, spacing: 0) {
                     brush
                     Rule()
-                    colorSection
-                    Rule()
+                    if model.tool != .select {
+                        colorSection
+                        Rule()
+                    }
                     layerSection
                 }
             }
@@ -58,7 +60,9 @@ struct Inspector: View {
                 Image(systemName: model.tool.symbol).font(.system(size: 15, weight: .medium))
                 Text(model.tool.label).font(.system(size: 13, weight: .medium))
             }.foregroundStyle(StudioStyle.green)
-            if model.tool != .pick {
+            if model.tool == .select {
+                SelectionControls(model: model)
+            } else if model.tool != .pick {
                 HStack {
                     Text("Brush size").font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
                     Spacer()
@@ -72,8 +76,22 @@ struct Inspector: View {
                         }.disabled(model.brushSize >= 8)
                     }.padding(2).overlay(RoundedRectangle(cornerRadius: 6).stroke(StudioStyle.rule))
                 }
+                HStack(spacing: 5) {
+                    Text("Mirror").font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+                    Spacer()
+                    mirrorAxis("X", enabled: $model.mirrorX)
+                    mirrorAxis("Z", enabled: $model.mirrorZ)
+                }
             }
         }.padding(.horizontal, 18).padding(.vertical, 16)
+    }
+
+    private func mirrorAxis(_ axis: String, enabled: Binding<Bool>) -> some View {
+        Toggle(isOn: enabled) {
+            Text(axis).font(.system(size: 11, weight: .semibold, design: .monospaced)).frame(width: 19)
+        }.toggleStyle(.button).controlSize(.small)
+            .accessibilityLabel("Mirror \(axis)")
+            .help("Mirror brush strokes across the \(axis) = 0 plane")
     }
 
     private var colorSection: some View {
@@ -169,6 +187,47 @@ struct Inspector: View {
                     }
             }
         }.padding(.horizontal, 10).padding(.vertical, 13)
+    }
+}
+
+private struct SelectionControls: View {
+    @ObservedObject var model: EditorModel
+    @ViewState private var moveBlocked = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("\(model.selection.count.formatted()) selected").monospacedDigit()
+                Spacer()
+                Button("All") { model.selectAllOnActiveLayer() }.help("Select all voxels on this layer (⌘A)")
+                Button("Clear") { model.clearSelection() }.disabled(model.selection.isEmpty)
+                    .help("Clear selection (Esc)")
+            }.font(.system(size: 11)).controlSize(.small)
+            Text("Move one voxel").font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)
+            HStack(spacing: 5) {
+                nudgeAxis("X", direction: Cell(1, 0, 0))
+                nudgeAxis("Y", direction: Cell(0, 1, 0))
+                nudgeAxis("Z", direction: Cell(0, 0, 1))
+            }.disabled(model.selection.isEmpty)
+            if moveBlocked {
+                Text("Move blocked by occupied cells or the grid boundary.")
+                    .font(.caption).foregroundStyle(StudioStyle.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }.onChange(of: model.selection) { _ in moveBlocked = false }
+    }
+
+    private func nudgeAxis(_ axis: String, direction: Cell) -> some View {
+        HStack(spacing: 1) {
+            IconControl(symbol: "minus", hint: "Move −\(axis)", size: 21, font: 9) {
+                moveBlocked = !model.moveSelection(by: Cell(-direction.x, -direction.y, -direction.z))
+            }
+            Text(axis).font(.system(size: 11, weight: .medium, design: .monospaced))
+            IconControl(symbol: "plus", hint: "Move +\(axis)", size: 21, font: 9) {
+                moveBlocked = !model.moveSelection(by: direction)
+            }
+        }.frame(maxWidth: .infinity).padding(.vertical, 2)
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(StudioStyle.rule))
     }
 }
 

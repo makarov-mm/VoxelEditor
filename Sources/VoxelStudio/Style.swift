@@ -42,6 +42,7 @@ extension EditTool {
         case .paint: return "Paint"
         case .erase: return "Erase"
         case .pick: return "Eyedropper"
+        case .select: return "Select"
         }
     }
     var symbol: String {
@@ -50,6 +51,7 @@ extension EditTool {
         case .paint: return "paintbrush.pointed"
         case .erase: return "eraser"
         case .pick: return "eyedropper"
+        case .select: return "rectangle.dashed"
         }
     }
     var shortcut: String {
@@ -58,6 +60,7 @@ extension EditTool {
         case .paint: return "B"
         case .erase: return "E"
         case .pick: return "I"
+        case .select: return "S"
         }
     }
     var instruction: String {
@@ -66,6 +69,7 @@ extension EditTool {
         case .paint: return "Click a voxel to paint it"
         case .erase: return "Click to erase voxels on the active layer"
         case .pick: return "Click a voxel to sample its color"
+        case .select: return "Click or box-select voxels. Drag a selection to move it."
         }
     }
 }

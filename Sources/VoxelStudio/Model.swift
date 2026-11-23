@@ -57,7 +57,15 @@ struct Ink: Hashable, Codable {
 }
 
 enum EditTool: String, CaseIterable {
-    case add, paint, erase, pick
+    case add, paint, erase, pick, select
+}
+
+enum SelectionMode {
+    case replace, add, toggle
+}
+
+struct BrushBox: Equatable {
+    var min, max: Cell
 }
 
 struct VoxelLayer: Identifiable {
@@ -145,8 +153,19 @@ final class EditorModel: ObservableObject {
             revision &+= 1
         }
     }
-    @Published var activeLayerID: UUID
-    @Published var tool: EditTool = .add
+    @Published var activeLayerID: UUID {
+        didSet {
+            if oldValue != activeLayerID { endStroke(); clearSelection() }
+        }
+    }
+    @Published var tool: EditTool = .add {
+        didSet {
+            if oldValue != tool { endStroke(); clearSelection() }
+        }
+    }
+    @Published var mirrorX = false
+    @Published var mirrorZ = false
+    @Published private(set) var selection: Set<Cell> = []
     @Published var ink = Ink(hex: "E96555")
     @Published var showGrid = true
     @Published var showEdges = false
@@ -178,6 +197,7 @@ final class EditorModel: ObservableObject {
 
     private enum Change {
         case voxels(UUID, [Cell: Delta])
+        case move(layer: UUID, source: Set<Cell>, delta: Cell)
         case layer(VoxelLayer, index: Int, inserted: Bool, oldActive: UUID, newActive: UUID)
         case visibility(UUID, Bool)
         case name(UUID, before: String, after: String)
@@ -224,7 +244,7 @@ final class EditorModel: ObservableObject {
     }
 
     func brushBounds(hit: Cell?, adjacent: Cell?) -> (min: Cell, max: Cell)? {
-        guard let center = tool == .add ? adjacent : hit, center.inBounds else { return nil }
+        guard tool != .select, let center = tool == .add ? adjacent : hit, center.inBounds else { return nil }
         if tool == .pick { return (center, center) }
 
         let size = min(8, max(1, brushSize))
@@ -243,13 +263,37 @@ final class EditorModel: ObservableObject {
         return (Cell(x.lowerBound, y.lowerBound, z.lowerBound), Cell(x.upperBound, y.upperBound, z.upperBound))
     }
 
+    func brushBoxes(hit: Cell?, adjacent: Cell?) -> [BrushBox] {
+        guard let base = brushBounds(hit: hit, adjacent: adjacent) else { return [] }
+        if tool == .pick { return [BrushBox(min: base.min, max: base.max)] }
+
+        func intervals(_ start: Int, _ end: Int, mirrored: Bool) -> [ClosedRange<Int>] {
+            let original = start...end
+            guard mirrored else { return [original] }
+            let reflection = (-end - 1)...(-start - 1)
+            let (left, right) = start <= reflection.lowerBound ? (original, reflection) : (reflection, original)
+            if left.upperBound + 1 < right.lowerBound { return [left, right] }
+            return [left.lowerBound...max(left.upperBound, right.upperBound)]
+        }
+
+        let xs = intervals(base.min.x, base.max.x, mirrored: mirrorX)
+        let zs = intervals(base.min.z, base.max.z, mirrored: mirrorZ)
+        return xs.flatMap { x in
+            zs.map { z in
+                BrushBox(min: Cell(x.lowerBound, base.min.y, z.lowerBound),
+                         max: Cell(x.upperBound, base.max.y, z.upperBound))
+            }
+        }
+    }
+
     func apply(hit: Cell?, adjacent: Cell?) {
+        guard tool != .select else { return }
         if tool == .pick {
             if let hit, let color = visibleCells[hit] { ink = color }
             return
         }
-        guard let index = layers.firstIndex(where: { $0.id == activeLayerID && $0.isVisible }),
-              let bounds = brushBounds(hit: hit, adjacent: adjacent) else { return }
+        let boxes = brushBoxes(hit: hit, adjacent: adjacent)
+        guard !boxes.isEmpty, let index = visibleActiveLayerIndex else { return }
 
         if let activeStroke = stroke, activeStroke.layer != activeLayerID { endStroke() }
         let singleClick = stroke == nil
@@ -258,20 +302,20 @@ final class EditorModel: ObservableObject {
 
         let visible = visibleCells
         var edits: [Cell: Delta] = [:]
-        for x in bounds.min.x...bounds.max.x {
-            for y in bounds.min.y...bounds.max.y {
-                for z in bounds.min.z...bounds.max.z {
-                    let cell = Cell(x, y, z)
-                    let previous = layers[index].cells[cell]
-                    if tool == .add {
-                        guard visible[cell] == nil else { continue }
-                    } else {
-                        guard previous != nil, !layers.dropFirst(index + 1).contains(where: {
-                            $0.isVisible && $0.cells[cell] != nil
-                        }) else { continue }
+        for bounds in boxes {
+            for x in bounds.min.x...bounds.max.x {
+                for y in bounds.min.y...bounds.max.y {
+                    for z in bounds.min.z...bounds.max.z {
+                        let cell = Cell(x, y, z)
+                        let previous = layers[index].cells[cell]
+                        if tool == .add {
+                            guard visible[cell] == nil else { continue }
+                        } else {
+                            guard ownsVisibleCell(cell, in: index) else { continue }
+                        }
+                        let next: Ink? = tool == .erase ? nil : ink
+                        if previous != next { edits[cell] = Delta(before: previous, after: next) }
                     }
-                    let next: Ink? = tool == .erase ? nil : ink
-                    if previous != next { edits[cell] = Delta(before: previous, after: next) }
                 }
             }
         }
@@ -282,6 +326,87 @@ final class EditorModel: ObservableObject {
         }
         write(edits, in: &layers[index].cells, forward: true)
         isDirty = true
+    }
+
+    private var visibleActiveLayerIndex: Int? {
+        layers.firstIndex { $0.id == activeLayerID && $0.isVisible }
+    }
+
+    private func ownsVisibleCell(_ cell: Cell, in index: Int) -> Bool {
+        layers[index].cells[cell] != nil && !layers.dropFirst(index + 1).contains {
+            $0.isVisible && $0.cells[cell] != nil
+        }
+    }
+
+    func clearSelection() {
+        if !selection.isEmpty { selection = [] }
+    }
+
+    func select(_ cells: Set<Cell>, mode: SelectionMode = .replace) {
+        guard tool == .select, let index = visibleActiveLayerIndex else { clearSelection(); return }
+        let eligible = cells.filter { ownsVisibleCell($0, in: index) }
+        let result: Set<Cell>
+        switch mode {
+        case .replace: result = eligible
+        case .add: result = selection.union(eligible)
+        case .toggle: result = selection.symmetricDifference(eligible)
+        }
+        if result != selection { selection = result }
+    }
+
+    func selectAllOnActiveLayer() {
+        tool = .select
+        guard let index = visibleActiveLayerIndex else { clearSelection(); return }
+        var visible = Set(layers[index].cells.keys)
+        for layer in layers.dropFirst(index + 1) where layer.isVisible {
+            visible.subtract(layer.cells.keys)
+        }
+        if visible != selection { selection = visible }
+    }
+
+    private func pruneSelection() {
+        if !selection.isEmpty { select(selection) }
+    }
+
+    func canMoveSelection(by delta: Cell) -> Bool {
+        let span = (1 - Cell.gridSize)..<Cell.gridSize
+        guard tool == .select, visibleActiveLayerIndex != nil, !selection.isEmpty,
+              delta != Cell(0, 0, 0), span.contains(delta.x), span.contains(delta.y), span.contains(delta.z) else {
+            return false
+        }
+        let occupied = visibleCells
+        for cell in selection {
+            let to = cell.offset(delta.x, delta.y, delta.z)
+            guard to.inBounds else { return false }
+            if selection.contains(to) {
+                // An overlapping source will be vacated, but other visible layers must remain clear.
+                if layers.contains(where: { $0.id != activeLayerID && $0.isVisible && $0.cells[to] != nil }) { return false }
+            } else if occupied[to] != nil {
+                return false
+            }
+        }
+        return true
+    }
+
+    @discardableResult
+    func moveSelection(by delta: Cell) -> Bool {
+        guard canMoveSelection(by: delta), let index = visibleActiveLayerIndex else { return false }
+        endStroke()
+        let source = selection
+        selection = relocate(source, by: delta, in: &layers[index].cells)
+        record(.move(layer: activeLayerID, source: source, delta: delta))
+        return true
+    }
+
+    private func relocate(_ source: Set<Cell>, by delta: Cell, in cells: inout [Cell: Ink]) -> Set<Cell> {
+        var moved: [Cell: Ink] = [:]
+        moved.reserveCapacity(source.count)
+        // Extract every source first, so translations can overlap regardless of iteration order.
+        for cell in source {
+            moved[cell.offset(delta.x, delta.y, delta.z)] = cells.removeValue(forKey: cell)
+        }
+        cells.merge(moved) { _, incoming in incoming }
+        return Set(moved.keys)
     }
 
     private func write(_ changes: [Cell: Delta], in cells: inout [Cell: Ink], forward: Bool) {
@@ -324,6 +449,7 @@ final class EditorModel: ObservableObject {
         endStroke()
         guard let index = layers.firstIndex(where: { $0.id == id }) else { return }
         layers[index].isVisible.toggle()
+        pruneSelection()
         record(.visibility(id, layers[index].isVisible))
     }
 
@@ -368,6 +494,12 @@ final class EditorModel: ObservableObject {
         case let .voxels(id, deltas):
             guard let index = layers.firstIndex(where: { $0.id == id }) else { return }
             write(deltas, in: &layers[index].cells, forward: forward)
+        case let .move(id, source, delta):
+            guard let i = layers.firstIndex(where: { $0.id == id }) else { return }
+            let previous = forward ? source : Set(source.map { $0.offset(delta.x, delta.y, delta.z) })
+            let direction = forward ? delta : Cell(-delta.x, -delta.y, -delta.z)
+            let moved = relocate(previous, by: direction, in: &layers[i].cells)
+            if tool == .select && activeLayerID == id { selection = moved }
         case let .layer(layer, index, inserted, oldActive, newActive):
             if inserted == forward { layers.insert(layer, at: index) }
             else { layers.remove(at: index) }
@@ -384,10 +516,14 @@ final class EditorModel: ObservableObject {
             if forward { palette.append(color) }
             else { palette.removeLast() }
         }
+        pruneSelection()
     }
 
     private func replaceLayers(_ newLayers: [VoxelLayer], activeID: UUID, title: String, palette: [Ink], url: URL?, origin: Cell? = nil) {
         stroke = nil
+        clearSelection()
+        mirrorX = false
+        mirrorZ = false
         undoStack.removeAll()
         redoStack.removeAll()
         layers = newLayers

@@ -72,8 +72,28 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         guard event.window === window, window?.attachedSheet == nil, NSApp.modalWindow == nil,
               !(window?.firstResponder is NSTextView),
               event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else { return false }
+        if model.tool == .select, !model.selection.isEmpty {
+            let delta: Cell?
+            switch event.keyCode {
+            case 123: delta = Cell(-1, 0, 0)
+            case 124: delta = Cell(1, 0, 0)
+            case 125: delta = Cell(0, 0, 1)
+            case 126: delta = Cell(0, 0, -1)
+            case 116: delta = Cell(0, 1, 0)
+            case 121: delta = Cell(0, -1, 0)
+            case 53 where !(window?.firstResponder is StudioViewportSurface):
+                model.clearSelection()
+                return true
+            default: delta = nil
+            }
+            if let delta {
+                if !model.moveSelection(by: delta) { NSSound.beep() }
+                return true
+            }
+        }
         // Physical positions stay accessible across keyboard layouts.
         switch event.keyCode {
+        case 1: model.tool = .select
         case 9: model.tool = .add
         case 11: model.tool = .paint
         case 14: model.tool = .erase
@@ -124,6 +144,7 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         file.addItem(.separator())
         item(file, "Import MagicaVoxel (.vox)…", #selector(importVox), "i", modifiers: [.command, .shift], target: self)
         item(file, "Export MagicaVoxel (.vox)…", #selector(exportVox), target: self)
+        item(file, "Export Scene PNG…", #selector(exportPng), "p", modifiers: [.command, .shift], target: self)
         item(file, "Export Wavefront OBJ…", #selector(exportObj), "e", modifiers: [.command, .shift], target: self)
         file.addItem(.separator())
         item(file, "Close Window", #selector(NSWindow.performClose(_:)), "w")
@@ -135,6 +156,7 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         item(edit, "Copy", #selector(NSText.copy(_:)), "c")
         item(edit, "Paste", #selector(NSText.paste(_:)), "v")
         item(edit, "Select All", #selector(NSText.selectAll(_:)), "a")
+        item(edit, "Deselect Voxels", #selector(deselectVoxels), target: self)
         let view = menu("View")
         item(view, "Show Grid", #selector(grid), target: self)
         item(view, "Show Voxel Edges", #selector(edges), target: self)
@@ -157,6 +179,13 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     @objc private func saveAs() { model.saveProject(asNew: true) }
     @objc private func importVox() { model.importVOX() }
     @objc private func exportVox() { model.exportVOX() }
+    @objc private func exportPng() { camera.exportPNG() }
+    // The responder chain handles text selection first in text fields and system panels.
+    @objc func selectAll(_ sender: Any?) {
+        guard NSApp.keyWindow === window, window?.attachedSheet == nil else { return }
+        model.selectAllOnActiveLayer()
+    }
+    @objc private func deselectVoxels() { model.clearSelection() }
     @objc private func exportObj() { model.exportOBJ() }
     @objc private func undoEdit() {
         if let text = NSApp.keyWindow?.firstResponder as? NSTextView { text.undoManager?.undo() }
@@ -179,6 +208,10 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         case #selector(redoEdit):
             if let text = NSApp.keyWindow?.firstResponder as? NSTextView { return text.undoManager?.canRedo ?? false }
             return model.canRedo
+        case #selector(selectAll(_:)):
+            return NSApp.keyWindow === window && window?.attachedSheet == nil &&
+                model.layers.contains { $0.id == model.activeLayerID && $0.isVisible && !$0.cells.isEmpty }
+        case #selector(deselectVoxels): return !model.selection.isEmpty
         case #selector(exportObj): return model.voxelCount > 0
         case #selector(exportVox): return model.layers.contains { !$0.cells.isEmpty }
         case #selector(grid): menuItem.state = model.showGrid ? .on : .off

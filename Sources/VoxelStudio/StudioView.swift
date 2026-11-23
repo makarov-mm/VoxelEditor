@@ -52,6 +52,7 @@ struct StudioView: View {
                 Divider()
                 Button("Import MagicaVoxel (.vox)…") { model.importVOX() }
                 Button("Export MagicaVoxel (.vox)…") { model.exportVOX() }.disabled(!model.layers.contains { !$0.cells.isEmpty })
+                Button("Export Scene PNG…") { camera.exportPNG() }
                 Button("Export OBJ…") { model.exportOBJ() }.disabled(model.voxelCount == 0)
             } label: {
                 HStack(spacing: 6) {
@@ -184,6 +185,10 @@ private struct HelpCard: View {
             Rule()
             ForEach(EditTool.allCases, id: \.self) { row($0.label, $0.shortcut) }
             row("Brush size", "[   ]")
+            row("Toggle selected voxel", "⌘ + click")
+            row("Add to selection", "⌘ + box drag")
+            row("Nudge X / Z", "← → / ↑ ↓")
+            row("Nudge Y", "Page Up / Down")
             row("Grid / edges", "G / W")
             Rule()
             Text("Select the layer you want to paint or erase in the inspector.")
