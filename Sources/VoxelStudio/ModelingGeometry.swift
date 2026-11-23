@@ -23,9 +23,8 @@ extension BrushBox {
         guard let first = cells.first else { return nil }
         self.init(first, first)
         for cell in cells {
-            min.x = Swift.min(min.x, cell.x); max.x = Swift.max(max.x, cell.x)
-            min.y = Swift.min(min.y, cell.y); max.y = Swift.max(max.y, cell.y)
-            min.z = Swift.min(min.z, cell.z); max.z = Swift.max(max.z, cell.z)
+            min = Cell(Swift.min(min.x, cell.x), Swift.min(min.y, cell.y), Swift.min(min.z, cell.z))
+            max = Cell(Swift.max(max.x, cell.x), Swift.max(max.y, cell.y), Swift.max(max.z, cell.z))
         }
     }
 
@@ -71,7 +70,8 @@ struct VoxelShape {
                     return Int(floor(Double(numerator) / Double(steps) + 0.5))
                 }
                 lineCells = (0...steps).map { i in
-                    Cell(coordinate(first.x, last.x, i), coordinate(first.y, last.y, i), coordinate(first.z, last.z, i))
+                    Cell(coordinate(first.x, last.x, i), coordinate(first.y, last.y, i),
+                         coordinate(first.z, last.z, i))
                 }
             }
             cellCount = lineCells.count

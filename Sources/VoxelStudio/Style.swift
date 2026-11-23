@@ -50,6 +50,7 @@ extension EditTool {
         case .fill: return "Fill"
         }
     }
+
     var symbol: String {
         switch self {
         case .add: return "cube"
@@ -64,6 +65,7 @@ extension EditTool {
         case .fill: return "drop.fill"
         }
     }
+
     var shortcut: String {
         switch self {
         case .add: return "V"
@@ -78,6 +80,7 @@ extension EditTool {
         case .fill: return "K"
         }
     }
+
     var instruction: String {
         switch self {
         case .add: return "Click a face or the grid to add voxels"
@@ -106,26 +109,29 @@ struct BrandCube: View {
                 path.closeSubpath()
                 context.fill(path, with: .color(Color(rgb: color)))
             }
-            fill([(16,0),(32,9),(16,18),(0,9)], 0xA7BE8F)
-            fill([(0,9),(16,18),(16,36),(0,27)], 0x6E8B63)
-            fill([(16,18),(32,9),(32,27),(16,36)], 0x354F43)
-            fill([(16,10),(23,14),(16,18),(9,14)], 0xD3DDBD)
-            fill([(9,14),(16,18),(16,26),(9,22)], 0xABC398)
-            fill([(16,18),(23,14),(23,22),(16,26)], 0x79966C)
+            fill([(16, 0), (32, 9), (16, 18), (0, 9)], 0xA7BE8F)
+            fill([(0, 9), (16, 18), (16, 36), (0, 27)], 0x6E8B63)
+            fill([(16, 18), (32, 9), (32, 27), (16, 36)], 0x354F43)
+            fill([(16, 10), (23, 14), (16, 18), (9, 14)], 0xD3DDBD)
+            fill([(9, 14), (16, 18), (16, 26), (9, 22)], 0xABC398)
+            fill([(16, 18), (23, 14), (23, 22), (16, 26)], 0x79966C)
         }.accessibilityHidden(true)
     }
 }
 
 struct StudioButtonStyle: ButtonStyle {
     var selected = false
+
     func makeBody(configuration: Configuration) -> some View {
         ButtonFace(configuration: configuration, selected: selected)
     }
+
     private struct ButtonFace: View {
         let configuration: ButtonStyle.Configuration
         let selected: Bool
         @ViewState private var hover = false
         @Environment(\.isEnabled) var enabled
+
         var body: some View {
             configuration.label
                 .foregroundStyle(selected ? StudioStyle.green : StudioStyle.ink)
@@ -145,6 +151,7 @@ struct IconControl: View {
     var font: CGFloat = 14
     var selected = false
     let action: () -> Void
+
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: font, weight: .medium))
@@ -155,6 +162,7 @@ struct IconControl: View {
 
 struct Rule: View {
     var vertical = false
+
     var body: some View {
         Rectangle().fill(StudioStyle.rule)
             .frame(width: vertical ? 1 : nil, height: vertical ? nil : 1)

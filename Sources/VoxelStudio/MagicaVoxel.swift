@@ -23,6 +23,7 @@ enum MagicaVoxel {
 
     fileprivate enum Issue: LocalizedError {
         case invalid(String), limit(String)
+
         var errorDescription: String? {
             switch self {
             case .invalid(let reason): return "Invalid VOX file. " + reason
@@ -86,7 +87,8 @@ private struct VoxCursor {
 
     mutating func int() throws -> Int {
         let i = try take(4).lowerBound
-        let n = UInt32(data[i]) | (UInt32(data[i + 1]) << 8) | (UInt32(data[i + 2]) << 16) | (UInt32(data[i + 3]) << 24)
+        let n = UInt32(data[i]) | (UInt32(data[i + 1]) << 8) | (UInt32(data[i + 2]) << 16)
+            | (UInt32(data[i + 3]) << 24)
         return Int(Int32(bitPattern: n))
     }
 
@@ -98,7 +100,9 @@ private struct VoxCursor {
 
     mutating func text(_ length: Int) throws -> String {
         let range = try take(length)
-        guard let result = String(data: data[range], encoding: .utf8) else { throw VoxError.invalid("Invalid text encoding.") }
+        guard let result = String(data: data[range], encoding: .utf8) else {
+            throw VoxError.invalid("Invalid text encoding.")
+        }
         return result
     }
 
@@ -150,7 +154,11 @@ private struct VoxTransform {
     func point(_ p: Cell) -> Cell {
         func component(_ a: Int) -> Int {
             let value: Int
-            switch abs(a) { case 1: value = p.x; case 2: value = p.y; default: value = p.z }
+            switch abs(a) {
+            case 1: value = p.x
+            case 2: value = p.y
+            default: value = p.z
+            }
             return a < 0 ? -value : value
         }
         return shift.offset(component(rows[0]), component(rows[1]), component(rows[2]))
@@ -173,6 +181,7 @@ private enum VoxNode {
     case transform(Attributes, Int, Int, VoxTransform)
     case group(Attributes, [Int])
     case shape(Attributes, Int)
+
     var children: [Int] {
         switch self {
         case let .transform(_, id, _, _): return [id]
@@ -183,7 +192,11 @@ private enum VoxNode {
 }
 
 private struct VoxFile {
-    struct Model { var size: Cell; var bytes: Range<Int> }
+    struct Model {
+        var size: Cell
+        var bytes: Range<Int>
+    }
+
     var models: [Model] = []
     var nodes: [Int: VoxNode] = [:]
     var layerInfo: [Int: Attributes] = [:]
@@ -196,9 +209,13 @@ private struct VoxFile {
         var reader = VoxCursor(data: data, offset: data.startIndex, end: data.endIndex)
         guard try reader.text(4) == "VOX " else { throw VoxError.invalid("Missing VOX signature.") }
         let version = try reader.int()
-        guard version == 150 || version == 200 else { throw VoxError.limit("VOX version \(version) is unsupported. Use version 150 or 200.") }
+        guard version == 150 || version == 200 else {
+            throw VoxError.limit("VOX version \(version) is unsupported. Use version 150 or 200.")
+        }
         let (tag, root, contents) = try reader.chunk()
-        guard tag == "MAIN", root.remaining == 0, reader.remaining == 0 else { throw VoxError.invalid("Invalid MAIN chunk.") }
+        guard tag == "MAIN", root.remaining == 0, reader.remaining == 0 else {
+            throw VoxError.invalid("Invalid MAIN chunk.")
+        }
         var chunks = contents
         while chunks.remaining > 0 {
             let (tag, payload, _) = try chunks.chunk()
@@ -239,7 +256,9 @@ private struct VoxFile {
                 _ = try c.int()
             case "nTRN", "nGRP", "nSHP":
                 let id = try c.int()
-                guard id >= 0, nodes[id] == nil, nodes.count < 262_144 else { throw VoxError.invalid("Invalid scene node ID.") }
+                guard id >= 0, nodes[id] == nil, nodes.count < 262_144 else {
+                    throw VoxError.invalid("Invalid scene node ID.")
+                }
                 let attrs = try c.dict()
                 if tag == "nTRN" {
                     let child = try c.int()
@@ -251,7 +270,10 @@ private struct VoxFile {
                     for index in 0..<n {
                         let frame = try c.dict()
                         let time = Int(frame["_f"] ?? "") ?? index
-                        if index == 0 || time < earliest { earliest = time; chosen = frame }
+                        if index == 0 || time < earliest {
+                            earliest = time
+                            chosen = frame
+                        }
                     }
                     nodes[id] = .transform(attrs, child, layer, try VoxTransform(chosen))
                 } else if tag == "nGRP" {
@@ -266,7 +288,10 @@ private struct VoxFile {
                     for index in 0..<n {
                         let model = try c.int(), frame = try c.dict()
                         let time = Int(frame["_f"] ?? "") ?? index
-                        if index == 0 || time < earliest { earliest = time; chosen = model }
+                        if index == 0 || time < earliest {
+                            earliest = time
+                            chosen = model
+                        }
                     }
                     nodes[id] = .shape(attrs, chosen)
                 }
@@ -290,7 +315,10 @@ private struct VoxFile {
         var total = 0
         func instantiate(_ id: Int, _ transform: VoxTransform, _ name: String?, _ hidden: Bool) throws {
             guard models.indices.contains(id) else { throw VoxError.invalid("Unknown model reference.") }
-            guard layers.count < EditorModel.layerLimit else { throw VoxError.limit("Forma supports up to \(EditorModel.layerLimit) objects per scene. Merge objects in MagicaVoxel and try again.") }
+            guard layers.count < EditorModel.layerLimit else {
+                throw VoxError.limit("Forma supports up to \(EditorModel.layerLimit) objects per scene. "
+                                     + "Merge objects in MagicaVoxel and try again.")
+            }
             let model = models[id], n = model.bytes.count / 4
             total += n
             guard total <= MagicaVoxel.voxelBudget else { throw budgetError }
@@ -308,7 +336,10 @@ private struct VoxFile {
                 if let a = minCell, let b = maxCell {
                     minCell = Cell(min(a.x, p.x), min(a.y, p.y), min(a.z, p.z))
                     maxCell = Cell(max(b.x, p.x), max(b.y, p.y), max(b.z, p.z))
-                } else { minCell = p; maxCell = p }
+                } else {
+                    minCell = p
+                    maxCell = p
+                }
             }
             let label = name.flatMap { $0.isEmpty ? nil : $0 } ?? "Model \(id + 1)"
             layers.append(VoxelLayer(name: label, isVisible: !hidden, cells: cells))
@@ -322,11 +353,15 @@ private struct VoxFile {
         } else {
             var visited = Set<Int>(), path = Set<Int>(), visits = 0
             func visit(_ id: Int, _ parent: VoxTransform, _ inherited: String?, _ hidden: Bool) throws {
-                guard let node = nodes[id], path.insert(id).inserted else { throw VoxError.invalid("Invalid node reference or cyclic scene graph.") }
+                guard let node = nodes[id], path.insert(id).inserted else {
+                    throw VoxError.invalid("Invalid node reference or cyclic scene graph.")
+                }
                 defer { path.remove(id) }
                 visited.insert(id)
                 visits += 1
-                guard path.count <= 256, visits <= 500_000 else { throw VoxError.limit("The VOX scene graph is too complex.") }
+                guard path.count <= 256, visits <= 500_000 else {
+                    throw VoxError.limit("The VOX scene graph is too complex.")
+                }
                 switch node {
                 case let .transform(attrs, child, layer, local):
                     let info = layerInfo[layer] ?? [:]
@@ -343,14 +378,17 @@ private struct VoxFile {
             let children = Set(nodes.values.flatMap(\.children))
             let roots = nodes.keys.filter { !children.contains($0) }.sorted()
             for id in roots { try visit(id, VoxTransform(), nil, false) }
-            guard visited.count == nodes.count, !layers.isEmpty else { throw VoxError.invalid("Incomplete scene graph.") }
+            guard visited.count == nodes.count, !layers.isEmpty else {
+                throw VoxError.invalid("Incomplete scene graph.")
+            }
         }
 
         var origin: Cell?
         if let a = minCell, let b = maxCell {
             func offset(_ low: Int, _ high: Int, inside bounds: ClosedRange<Int>) throws -> Int {
                 guard high - low < Cell.gridSize else {
-                    throw VoxError.limit("The scene spans more than 256 cells on an axis. Move its objects closer together or split the scene.")
+                    throw VoxError.limit("The scene spans more than 256 cells on an axis. "
+                                         + "Move its objects closer together or split the scene.")
                 }
                 if low < bounds.lowerBound { return bounds.lowerBound - low }
                 if high > bounds.upperBound { return bounds.upperBound - high }
@@ -413,12 +451,19 @@ private struct VoxEncoder {
     let origin: Cell
 
     func encode() throws -> Data {
-        guard !layers.isEmpty, layers.count <= EditorModel.layerLimit else { throw VoxError.limit("The number of layers is unsupported.") }
+        guard !layers.isEmpty, layers.count <= EditorModel.layerLimit else {
+            throw VoxError.limit("The number of layers is unsupported.")
+        }
         let total = layers.reduce(0) { $0 + $1.cells.count }
-        guard total <= MagicaVoxel.voxelBudget else { throw VoxError.limit("Split the scene into files with at most two million voxels each.") }
+        guard total <= MagicaVoxel.voxelBudget else {
+            throw VoxError.limit("Split the scene into files with at most two million voxels each.")
+        }
         var required = Set<Ink>()
         for layer in layers { required.formUnion(layer.cells.values) }
-        guard required.count <= 255 else { throw VoxError.limit("VOX supports 255 colors and materials. Reduce the number of swatches used by voxels before exporting.") }
+        guard required.count <= 255 else {
+            throw VoxError.limit("VOX supports 255 colors and materials. "
+                                 + "Reduce the number of swatches used by voxels before exporting.")
+        }
 
         var colors: [Ink] = []
         var indices: [Ink: UInt8] = [:]
@@ -456,7 +501,10 @@ private struct VoxEncoder {
                 if let a = minimum, let b = maximum {
                     minimum = Cell(min(a.x, v.x), min(a.y, v.y), min(a.z, v.z))
                     maximum = Cell(max(b.x, v.x), max(b.y, v.y), max(b.z, v.z))
-                } else { minimum = v; maximum = v }
+                } else {
+                    minimum = v
+                    maximum = v
+                }
             }
             let a = minimum ?? Cell(0, 0, 0), b = maximum ?? a
             let size = Cell(b.x - a.x + 1, b.y - a.y + 1, b.z - a.z + 1)
@@ -466,14 +514,18 @@ private struct VoxEncoder {
             }
             transforms.append(pivot)
             var dimensions = Data()
-            dimensions.put(size.x); dimensions.put(size.y); dimensions.put(size.z)
+            dimensions.put(size.x)
+            dimensions.put(size.y)
+            dimensions.put(size.z)
             chunks.chunk("SIZE", content: dimensions)
 
             var xyzi = Data(capacity: 4 + layer.cells.count * 4)
             xyzi.put(layer.cells.count)
             for (p, color) in layer.cells {
                 let v = vox(p)
-                xyzi.append(UInt8(v.x - a.x)); xyzi.append(UInt8(v.y - a.y)); xyzi.append(UInt8(v.z - a.z))
+                xyzi.append(UInt8(v.x - a.x))
+                xyzi.append(UInt8(v.y - a.y))
+                xyzi.append(UInt8(v.z - a.z))
                 xyzi.append(indices[color]!)
             }
             chunks.chunk("XYZI", content: xyzi)
@@ -481,27 +533,36 @@ private struct VoxEncoder {
 
         chunks.chunk("nTRN", content: transform(0, child: 1, layer: -1, name: nil, t: Cell(0, 0, 0)))
         var group = Data()
-        group.put(1); group.putDict([:]); group.put(layers.count)
+        group.put(1)
+        group.putDict([:])
+        group.put(layers.count)
         for i in layers.indices { group.put(2 + 2 * i) }
         chunks.chunk("nGRP", content: group)
         for (i, layer) in layers.enumerated() {
             let id = 2 + i * 2
             chunks.chunk("nTRN", content: transform(id, child: id + 1, layer: i, name: layer.name, t: transforms[i]))
             var shape = Data()
-            shape.put(id + 1); shape.putDict([:]); shape.put(1); shape.put(i); shape.putDict([:])
+            shape.put(id + 1)
+            shape.putDict([:])
+            shape.put(1)
+            shape.put(i)
+            shape.putDict([:])
             chunks.chunk("nSHP", content: shape)
             var info = Data()
             info.put(i)
             var attrs = ["_name": layer.name]
             if !layer.isVisible { attrs["_hidden"] = "1" }
-            info.putDict(attrs); info.put(-1)
+            info.putDict(attrs)
+            info.put(-1)
             chunks.chunk("LAYR", content: info)
         }
 
         var rgba = Data()
         func byte(_ n: Float) -> UInt8 { UInt8((max(0, min(1, n)) * 255).rounded()) }
         for color in colors {
-            rgba.append(byte(color.r)); rgba.append(byte(color.g)); rgba.append(byte(color.b))
+            rgba.append(byte(color.r))
+            rgba.append(byte(color.g))
+            rgba.append(byte(color.b))
             rgba.append(color.surface?.alpha ?? 255)
         }
         rgba.append(Data(repeating: 0, count: 1024 - rgba.count))
@@ -509,7 +570,8 @@ private struct VoxEncoder {
         for (i, color) in colors.enumerated() {
             if let attributes = color.surface?.properties, !attributes.isEmpty {
                 var material = Data()
-                material.put(i + 1); material.putDict(attributes)
+                material.put(i + 1)
+                material.putDict(attributes)
                 chunks.chunk("MATL", content: material)
             }
         }

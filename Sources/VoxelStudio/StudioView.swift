@@ -63,11 +63,13 @@ final class StudioUI: ObservableObject {
     }
 
     func rotate(_ axis: VoxelAxis, in model: EditorModel) {
-        selectionNotice = model.rotateSelection(around: axis) ? nil : "Rotation blocked by an occupied voxel, the grid edge, or the slice limit."
+        selectionNotice = model.rotateSelection(around: axis)
+            ? nil : "Rotation blocked by an occupied voxel, the grid edge, or the slice limit."
     }
 
     func nudge(_ delta: Cell, in model: EditorModel) {
-        selectionNotice = model.moveSelection(by: delta) ? nil : "Move blocked by an occupied voxel, the grid edge, or the slice limit."
+        selectionNotice = model.moveSelection(by: delta)
+            ? nil : "Move blocked by an occupied voxel, the grid edge, or the slice limit."
     }
 }
 
@@ -107,8 +109,10 @@ struct StudioView: View {
                 .tracking(1.2).foregroundStyle(StudioStyle.muted)
             Spacer(minLength: 10)
             HStack(spacing: 1) {
-                IconControl(symbol: "arrow.uturn.backward", hint: "Undo (⌘Z)") { model.undo() }.disabled(!model.canUndo)
-                IconControl(symbol: "arrow.uturn.forward", hint: "Redo (⇧⌘Z)") { model.redo() }.disabled(!model.canRedo)
+                IconControl(symbol: "arrow.uturn.backward", hint: "Undo (⌘Z)") { model.undo() }
+                    .disabled(!model.canUndo)
+                IconControl(symbol: "arrow.uturn.forward", hint: "Redo (⇧⌘Z)") { model.redo() }
+                    .disabled(!model.canRedo)
             }
             Rule(vertical: true).frame(height: 19)
             Menu {
@@ -119,7 +123,8 @@ struct StudioView: View {
                 Button("Save As…") { model.saveProject(asNew: true) }
                 Divider()
                 Button("Import MagicaVoxel (.vox)…") { model.importVOX() }
-                Button("Export MagicaVoxel (.vox)…") { model.exportVOX() }.disabled(!model.layers.contains { !$0.cells.isEmpty })
+                Button("Export MagicaVoxel (.vox)…") { model.exportVOX() }
+                    .disabled(!model.layers.contains { !$0.cells.isEmpty })
                 Button("Export Scene PNG…") { camera.exportPNG() }
                 Button("Export OBJ…") { model.exportOBJ() }.disabled(model.voxelCount == 0)
             } label: {
@@ -134,7 +139,8 @@ struct StudioView: View {
                     Image(systemName: "square.and.arrow.down").font(.system(size: 12, weight: .medium))
                     Text("Save").font(.system(size: 12, weight: .semibold))
                 }.padding(.horizontal, 13).frame(height: 30)
-                    .foregroundStyle(StudioStyle.primaryLabel).background(RoundedRectangle(cornerRadius: 6).fill(StudioStyle.ink))
+                    .foregroundStyle(StudioStyle.primaryLabel)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(StudioStyle.ink))
             }.buttonStyle(.plain).help("Save project (⌘S)")
         }.padding(.horizontal, 18).frame(height: 54).background(StudioStyle.paper)
     }
@@ -157,7 +163,9 @@ struct StudioView: View {
                                     selected: model.showEdges) { model.showEdges.toggle() }
                     }.frame(maxWidth: .infinity)
                 }
-                IconControl(symbol: "questionmark.circle", hint: "Controls", size: size, font: 16) { ui.showingHelp.toggle() }
+                IconControl(symbol: "questionmark.circle", hint: "Controls", size: size, font: 16) {
+                    ui.showingHelp.toggle()
+                }
                     .popover(isPresented: $ui.showingHelp, arrowEdge: .trailing) { HelpCard() }
             }.padding(.vertical, compact ? 5 : 10).frame(maxHeight: .infinity)
         }.background(StudioStyle.rail)
@@ -187,10 +195,12 @@ struct StudioView: View {
                         }
                         HStack(spacing: 6) {
                             Image(systemName: "cube").font(.system(size: 10))
-                            Text("\(Cell.gridSize) × \(Cell.gridSize) × \(Cell.gridSize)").font(.system(size: 10, weight: .medium, design: .monospaced))
+                            Text("\(Cell.gridSize) × \(Cell.gridSize) × \(Cell.gridSize)")
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
                             if model.sliceEnabled {
                                 Text("·")
-                                Text("Slice Y ≤ \(model.sliceLevel)").font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                Text("Slice Y ≤ \(model.sliceLevel)")
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
                             }
                         }.foregroundStyle(StudioStyle.secondary)
                     }.allowsHitTesting(false)
@@ -213,7 +223,9 @@ struct StudioView: View {
                             .frame(minWidth: 43).accessibilityLabel("Zoom \(camera.zoomPercent) percent")
                         IconControl(symbol: "plus", hint: "Zoom in", size: 28, font: 10) { camera.zoomIn() }
                         Rule(vertical: true).frame(height: 13).padding(.horizontal, 3)
-                        IconControl(symbol: "viewfinder", hint: "Frame scene (F)", size: 28, font: 13) { camera.reset() }
+                        IconControl(symbol: "viewfinder", hint: "Frame scene (F)", size: 28, font: 13) {
+                            camera.reset()
+                        }
                     }.padding(2).modifier(FloatingSurface())
                 }
             }.padding(.horizontal, 22).padding(.vertical, 18)
@@ -307,6 +319,7 @@ private struct HelpCard: View {
             }.frame(maxHeight: 380)
         }.padding(18).frame(width: 282).foregroundStyle(StudioStyle.ink).background(StudioStyle.paper)
     }
+
     private func row(_ action: String, _ shortcut: String) -> some View {
         HStack {
             Text(action).font(.system(size: 12))

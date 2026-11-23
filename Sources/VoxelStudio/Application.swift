@@ -30,7 +30,8 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let available = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1250, height: 840)
-        let start = NSRect(x: 0, y: 0, width: min(1240, available.width - 48), height: min(790, available.height - 65))
+        let start = NSRect(x: 0, y: 0, width: min(1240, available.width - 48),
+                           height: min(790, available.height - 65))
         let window = NSWindow(contentRect: start, styleMask: [.titled, .closable, .resizable, .miniaturizable],
                               backing: .buffered, defer: false)
         self.window = window
@@ -56,14 +57,18 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     func application(_ sender: NSApplication, open urls: [URL]) {
         if let url = urls.first { model.openProject(at: url) }
     }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         approvedClose = model.shouldCloseProject()
         return approvedClose
     }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         approvedClose || model.shouldCloseProject() ? .terminateNow : .terminateCancel
     }
+
     func applicationWillTerminate(_ notification: Notification) {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
     }
@@ -74,7 +79,9 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
               event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else { return false }
         if model.pendingPaste != nil {
             switch event.keyCode {
-            case 53: model.cancelPaste(); return true
+            case 53:
+                model.cancelPaste()
+                return true
             case 36, 76:
                 if !model.commitPaste() { NSSound.beep() }
                 return true
@@ -158,7 +165,8 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         item(app, "About Forma", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), target: NSApp)
         app.addItem(.separator())
         item(app, "Hide Forma", #selector(NSApplication.hide(_:)), "h", target: NSApp)
-        item(app, "Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", modifiers: [.command, .option], target: NSApp)
+        item(app, "Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h",
+             modifiers: [.command, .option], target: NSApp)
         item(app, "Show All", #selector(NSApplication.unhideAllApplications(_:)), target: NSApp)
         app.addItem(.separator())
         item(app, "Quit Forma", #selector(NSApplication.terminate(_:)), "q", target: NSApp)
@@ -170,7 +178,8 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         item(file, "Save", #selector(save), "s", target: self)
         item(file, "Save As…", #selector(saveAs), "s", modifiers: [.command, .shift], target: self)
         file.addItem(.separator())
-        item(file, "Import MagicaVoxel (.vox)…", #selector(importVox), "i", modifiers: [.command, .shift], target: self)
+        item(file, "Import MagicaVoxel (.vox)…", #selector(importVox), "i",
+             modifiers: [.command, .shift], target: self)
         item(file, "Export MagicaVoxel (.vox)…", #selector(exportVox), target: self)
         item(file, "Export Scene PNG…", #selector(exportPng), "p", modifiers: [.command, .shift], target: self)
         item(file, "Export Wavefront OBJ…", #selector(exportObj), "e", modifiers: [.command, .shift], target: self)
@@ -189,13 +198,13 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         edit.addItem(.separator())
         item(edit, "Duplicate Selection", #selector(duplicateSelection), "d", target: self)
         for axis in VoxelAxis.allCases {
-            item(edit, "Rotate 90° Around \(axis.rawValue.uppercased())", #selector(rotateSelection(_:)), target: self)
-                .representedObject = axis.rawValue
+            let title = "Rotate 90° Around \(axis.rawValue.uppercased())"
+            item(edit, title, #selector(rotateSelection(_:)), target: self).representedObject = axis.rawValue
         }
         let tools = menu("Tools")
         for tool in EditTool.allCases {
-            item(tools, tool.label, #selector(chooseTool(_:)), tool.shortcut.lowercased(), modifiers: [], target: self)
-                .representedObject = tool.rawValue
+            item(tools, tool.label, #selector(chooseTool(_:)), tool.shortcut.lowercased(), modifiers: [],
+                 target: self).representedObject = tool.rawValue
         }
         let view = menu("View")
         item(view, "Show Grid", #selector(grid), target: self)
@@ -304,8 +313,10 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         case #selector(toggleSlice):
             menuItem.state = model.sliceEnabled ? .on : .off
             return editingCanvas
-        case #selector(lowerSlice): return editingCanvas && model.sliceEnabled && model.sliceLevel > Cell.verticalRange.lowerBound
-        case #selector(raiseSlice): return editingCanvas && model.sliceEnabled && model.sliceLevel < Cell.verticalRange.upperBound
+        case #selector(lowerSlice):
+            return editingCanvas && model.sliceEnabled && model.sliceLevel > Cell.verticalRange.lowerBound
+        case #selector(raiseSlice):
+            return editingCanvas && model.sliceEnabled && model.sliceLevel < Cell.verticalRange.upperBound
         case #selector(exportObj): return model.voxelCount > 0
         case #selector(exportVox): return model.layers.contains { !$0.cells.isEmpty }
         case #selector(grid): menuItem.state = model.showGrid ? .on : .off

@@ -80,7 +80,8 @@ private enum ProjectError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .nativeExtension: return "Save the native project as .vxl or use Export VOX for a MagicaVoxel file."
+        case .nativeExtension:
+            return "Save the native project as .vxl or use Export VOX for a MagicaVoxel file."
         case .invalidProject: return "This file contains invalid project data."
         case .unsupportedVersion: return "This project requires a different version of Forma."
         case .tooLarge: return "This project exceeds the supported size."
@@ -158,12 +159,18 @@ final class EditorModel: ObservableObject {
     }
     @Published var activeLayerID: UUID {
         didSet {
-            if oldValue != activeLayerID { endStroke(); clearSelection() }
+            if oldValue != activeLayerID {
+                endStroke()
+                clearSelection()
+            }
         }
     }
     @Published var tool: EditTool = .add {
         didSet {
-            if oldValue != tool { endStroke(); clearSelection() }
+            if oldValue != tool {
+                endStroke()
+                clearSelection()
+            }
         }
     }
     @Published var mirrorX = false
@@ -279,8 +286,11 @@ final class EditorModel: ObservableObject {
         guard let finished = stroke else { return }
         stroke = nil
         let changes = finished.changes.filter { $0.value.before != $0.value.after }
-        if !changes.isEmpty { record(.voxels(finished.layer, changes)) }
-        else { isDirty = currentState != savedState }
+        if !changes.isEmpty {
+            record(.voxels(finished.layer, changes))
+        } else {
+            isDirty = currentState != savedState
+        }
     }
 
     func brushBounds(hit: Cell?, adjacent: Cell?) -> (min: Cell, max: Cell)? {
@@ -363,8 +373,11 @@ final class EditorModel: ObservableObject {
         }
         guard !edits.isEmpty else { return }
         for (cell, change) in edits {
-            if stroke?.changes[cell] != nil { stroke?.changes[cell]?.after = change.after }
-            else { stroke?.changes[cell] = change }
+            if stroke?.changes[cell] != nil {
+                stroke?.changes[cell]?.after = change.after
+            } else {
+                stroke?.changes[cell] = change
+            }
         }
         write(edits, in: &layers[index].cells, forward: true)
         isDirty = true
@@ -387,7 +400,10 @@ final class EditorModel: ObservableObject {
 
     func select(_ cells: Set<Cell>, mode: SelectionMode = .replace) {
         guard pendingPaste == nil else { return }
-        guard tool == .select, let index = visibleActiveLayerIndex else { clearSelection(); return }
+        guard tool == .select, let index = visibleActiveLayerIndex else {
+            clearSelection()
+            return
+        }
         let eligible = cells.filter { ownsVisibleCell($0, in: index) }
         let result: Set<Cell>
         switch mode {
@@ -401,7 +417,10 @@ final class EditorModel: ObservableObject {
     func selectAllOnActiveLayer() {
         cancelPaste()
         tool = .select
-        guard let index = visibleActiveLayerIndex else { clearSelection(); return }
+        guard let index = visibleActiveLayerIndex else {
+            clearSelection()
+            return
+        }
         var visible = Set(layers[index].cells.keys.filter { isEditableHeight($0.y) })
         for layer in layers.dropFirst(index + 1) where layer.isVisible {
             visible.subtract(layer.cells.keys)
@@ -425,7 +444,9 @@ final class EditorModel: ObservableObject {
             guard to.inBounds, isEditableHeight(to.y) else { return false }
             if selection.contains(to) {
                 // An overlapping source will be vacated, but other visible layers must remain clear.
-                if layers.contains(where: { $0.id != activeLayerID && $0.isVisible && $0.cells[to] != nil }) { return false }
+                if layers.contains(where: { $0.id != activeLayerID && $0.isVisible && $0.cells[to] != nil }) {
+                    return false
+                }
             } else if occupied[to] != nil {
                 return false
             }
@@ -555,8 +576,11 @@ final class EditorModel: ObservableObject {
             let moved = relocate(previous, by: direction, in: &layers[i].cells)
             if tool == .select && activeLayerID == id { selection = moved }
         case let .layer(layer, index, inserted, oldActive, newActive):
-            if inserted == forward { layers.insert(layer, at: index) }
-            else { layers.remove(at: index) }
+            if inserted == forward {
+                layers.insert(layer, at: index)
+            } else {
+                layers.remove(at: index)
+            }
             activeLayerID = forward ? newActive : oldActive
         case let .visibility(id, visible):
             if let i = layers.firstIndex(where: { $0.id == id }) {
@@ -567,13 +591,17 @@ final class EditorModel: ObservableObject {
                 layers[index].name = forward ? after : before
             }
         case let .palette(color):
-            if forward { palette.append(color) }
-            else { palette.removeLast() }
+            if forward {
+                palette.append(color)
+            } else {
+                palette.removeLast()
+            }
         }
         pruneSelection()
     }
 
-    private func replaceLayers(_ newLayers: [VoxelLayer], activeID: UUID, title: String, palette: [Ink], url: URL?, origin: Cell? = nil) {
+    private func replaceLayers(_ newLayers: [VoxelLayer], activeID: UUID, title: String, palette: [Ink],
+                               url: URL?, origin: Cell? = nil) {
         stroke = nil
         clearSelection()
         mirrorX = false
@@ -605,7 +633,8 @@ final class EditorModel: ObservableObject {
     func loadDemo() {
         guard shouldCloseProject() else { return }
         let demo = DemoScene.layers()
-        replaceLayers(demo, activeID: demo.last!.id, title: "Northern Lighthouse", palette: Self.defaultPalette, url: nil)
+        replaceLayers(demo, activeID: demo.last!.id, title: "Northern Lighthouse", palette: Self.defaultPalette,
+                      url: nil)
     }
 
     func shouldCloseProject() -> Bool {
@@ -638,10 +667,14 @@ final class EditorModel: ObservableObject {
 
     func openProject(at url: URL) {
         do {
-            if url.pathExtension.lowercased() == "vox" { try importVOX(from: url) }
-            else { try loadProject(from: url) }
+            if url.pathExtension.lowercased() == "vox" {
+                try importVOX(from: url)
+            } else {
+                try loadProject(from: url)
+            }
+        } catch {
+            show(error, title: "Couldn’t open the project")
         }
-        catch { show(error, title: "Couldn’t open the project") }
     }
 
     func importVOX() {
@@ -649,8 +682,11 @@ final class EditorModel: ObservableObject {
         panel.allowedContentTypes = [voxType]
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try importVOX(from: url) }
-        catch { show(error, title: "Couldn’t import the VOX file") }
+        do {
+            try importVOX(from: url)
+        } catch {
+            show(error, title: "Couldn’t import the VOX file")
+        }
     }
 
     func importVOX(from url: URL) throws {
@@ -670,8 +706,11 @@ final class EditorModel: ObservableObject {
         panel.allowedContentTypes = [voxType]
         panel.nameFieldStringValue = title + ".vox"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try exportVOX(to: url) }
-        catch { show(error, title: "Couldn’t export the VOX file") }
+        do {
+            try exportVOX(to: url)
+        } catch {
+            show(error, title: "Couldn’t export the VOX file")
+        }
     }
 
     func exportVOX(to url: URL) throws {
@@ -685,7 +724,8 @@ final class EditorModel: ObservableObject {
         let file = try JSONDecoder().decode(ProjectFile.self, from: data)
         let newLayers = try file.validatedLayers()
         guard shouldCloseProject() else { return }
-        replaceLayers(newLayers, activeID: file.activeLayerID, title: file.title, palette: file.palette, url: url, origin: file.voxOrigin)
+        replaceLayers(newLayers, activeID: file.activeLayerID, title: file.title, palette: file.palette,
+                      url: url, origin: file.voxOrigin)
     }
 
     @discardableResult
@@ -700,8 +740,13 @@ final class EditorModel: ObservableObject {
             guard panel.runModal() == .OK, let selected = panel.url else { return false }
             url = selected
         }
-        do { try saveProject(to: url); return true }
-        catch { show(error, title: "Couldn’t save the project"); return false }
+        do {
+            try saveProject(to: url)
+            return true
+        } catch {
+            show(error, title: "Couldn’t save the project")
+            return false
+        }
     }
 
     func saveProject(to url: URL) throws {
@@ -739,20 +784,23 @@ final class EditorModel: ObservableObject {
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = title + ".obj"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try exportOBJ(to: url) }
-        catch { show(error, title: "Couldn’t export the model") }
+        do {
+            try exportOBJ(to: url)
+        } catch {
+            show(error, title: "Couldn’t export the model")
+        }
     }
 
     func exportOBJ(to url: URL) throws {
         let cells = visibleCells
         guard !cells.isEmpty else { throw ProjectError.emptyExport }
         let faces: [(neighbor: Cell, corners: [Cell])] = [
-            (Cell(1,0,0),  [Cell(1,0,0), Cell(1,1,0), Cell(1,1,1), Cell(1,0,1)]),
-            (Cell(-1,0,0), [Cell(0,0,1), Cell(0,1,1), Cell(0,1,0), Cell(0,0,0)]),
-            (Cell(0,1,0),  [Cell(0,1,1), Cell(1,1,1), Cell(1,1,0), Cell(0,1,0)]),
-            (Cell(0,-1,0), [Cell(0,0,0), Cell(1,0,0), Cell(1,0,1), Cell(0,0,1)]),
-            (Cell(0,0,1),  [Cell(1,0,1), Cell(1,1,1), Cell(0,1,1), Cell(0,0,1)]),
-            (Cell(0,0,-1), [Cell(0,0,0), Cell(0,1,0), Cell(1,1,0), Cell(1,0,0)])
+            (Cell(1, 0, 0),  [Cell(1, 0, 0), Cell(1, 1, 0), Cell(1, 1, 1), Cell(1, 0, 1)]),
+            (Cell(-1, 0, 0), [Cell(0, 0, 1), Cell(0, 1, 1), Cell(0, 1, 0), Cell(0, 0, 0)]),
+            (Cell(0, 1, 0),  [Cell(0, 1, 1), Cell(1, 1, 1), Cell(1, 1, 0), Cell(0, 1, 0)]),
+            (Cell(0, -1, 0), [Cell(0, 0, 0), Cell(1, 0, 0), Cell(1, 0, 1), Cell(0, 0, 1)]),
+            (Cell(0, 0, 1),  [Cell(1, 0, 1), Cell(1, 1, 1), Cell(0, 1, 1), Cell(0, 0, 1)]),
+            (Cell(0, 0, -1), [Cell(0, 0, 0), Cell(0, 1, 0), Cell(1, 1, 0), Cell(1, 0, 0)])
         ]
         var vertexIDs: [Cell: Int] = [:]
         var vertices = ""
@@ -764,8 +812,9 @@ final class EditorModel: ObservableObject {
                 for corner in face.corners {
                     let point = cell.offset(corner.x, corner.y, corner.z)
                     let index: Int
-                    if let existing = vertexIDs[point] { index = existing }
-                    else {
+                    if let existing = vertexIDs[point] {
+                        index = existing
+                    } else {
                         index = vertexIDs.count + 1
                         vertexIDs[point] = index
                         vertices += "v \(point.x) \(point.y) \(point.z)\n"
@@ -793,8 +842,9 @@ final class EditorModel: ObservableObject {
         if created { try materialData.write(to: materialURL, options: .withoutOverwriting) }
         var model = "mtllib \(materialURL.lastPathComponent)\no Voxels\n" + vertices + "s off\n"
         for key in keys { model += "usemtl c\(key)\n" + surfaces[key]! }
-        do { try Data(model.utf8).write(to: url, options: .atomic) }
-        catch {
+        do {
+            try Data(model.utf8).write(to: url, options: .atomic)
+        } catch {
             if created { try? FileManager.default.removeItem(at: materialURL) }
             throw error
         }
@@ -877,7 +927,8 @@ extension EditorModel {
         while let cell = pending.popLast() {
             for direction in Cell.neighbors {
                 let neighbor = cell.offset(direction)
-                if !region.contains(neighbor), layers[index].cells[neighbor] == original, ownsVisibleCell(neighbor, in: index) {
+                if !region.contains(neighbor), layers[index].cells[neighbor] == original,
+                   ownsVisibleCell(neighbor, in: index) {
                     region.insert(neighbor)
                     pending.append(neighbor)
                 }
@@ -976,7 +1027,9 @@ extension EditorModel {
 
     @discardableResult
     func deleteSelection() -> Bool {
-        guard pendingPaste == nil, tool == .select, let index = visibleActiveLayerIndex, !selection.isEmpty else { return false }
+        guard pendingPaste == nil, tool == .select, let index = visibleActiveLayerIndex, !selection.isEmpty else {
+            return false
+        }
         var changes: [Cell: Delta] = [:]
         changes.reserveCapacity(selection.count)
         for cell in selection {

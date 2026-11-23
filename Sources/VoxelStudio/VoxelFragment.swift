@@ -29,6 +29,7 @@ final class VoxelFragment: Equatable {
 
     enum Issue: LocalizedError {
         case invalid, tooLarge
+
         var errorDescription: String? {
             switch self {
             case .invalid: return "The clipboard does not contain a valid Forma voxel fragment."
@@ -85,7 +86,8 @@ final class VoxelFragment: Equatable {
         palette.reserveCapacity(paletteCount)
         let decoder = JSONDecoder()
         for _ in 0..<paletteCount {
-            var ink = try Ink(Float(bitPattern: reader.word()), Float(bitPattern: reader.word()), Float(bitPattern: reader.word()))
+            var ink = try Ink(Float(bitPattern: reader.word()), Float(bitPattern: reader.word()),
+                              Float(bitPattern: reader.word()))
             guard ink.isValid else { throw Issue.invalid }
             let length = Int(try reader.word())
             if length > 0 {
@@ -101,7 +103,9 @@ final class VoxelFragment: Equatable {
         for _ in 0..<count {
             let offset = try Cell(Int(records.byte()), Int(records.byte()), Int(records.byte()))
             let index = Int(try records.word())
-            guard index < palette.count, cells.updateValue(palette[index], forKey: offset) == nil else { throw Issue.invalid }
+            guard index < palette.count, cells.updateValue(palette[index], forKey: offset) == nil else {
+                throw Issue.invalid
+            }
         }
         guard let fragment = VoxelFragment(origin: origin, cells: cells) else { throw Issue.invalid }
         return fragment
@@ -142,6 +146,8 @@ private struct FragmentReader {
         guard remaining >= 4 else { throw VoxelFragment.Issue.invalid }
         let offset = position - data.startIndex
         position += 4
-        return data.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self)) }
+        return data.withUnsafeBytes {
+            UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self))
+        }
     }
 }
