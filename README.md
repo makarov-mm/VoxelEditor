@@ -1,4 +1,8 @@
-# Forma — macOS voxel editor
+# Forma — voxel editor for macOS and Windows
+
+The Windows x64 edition uses C++/WinRT, WinUI 3 and Direct3D 11. See [Windows build and controls](Windows/README.md) to run the editor or build it with Visual Studio 2026.
+
+## macOS edition
 
 Forma is a native Swift and Metal editor for building, painting, and editing voxel models on a 256 × 256 × 256 grid. Organize a scene into layers, sample colors directly from a model, and exchange `.vox` files with MagicaVoxel. The canvas and inspector follow the Mac’s light or dark appearance.
 

@@ -1,0 +1,8 @@
+/.tools/
+/packages/
+/bin/
+/obj/
+/Generated Files/
+/.vs/
+*.user
+
