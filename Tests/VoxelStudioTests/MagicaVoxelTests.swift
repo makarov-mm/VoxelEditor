@@ -141,6 +141,44 @@ final class MagicaVoxelTests: XCTestCase {
         XCTAssertThrowsError(try copy.loadProject(from: native))
     }
 
+    func testPastedMaterialSurvivesNativeSaveAndMagicaVoxelExport() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("Lantern.vox")
+        var chunks = geometry(2, 1, 1, [0, 0, 0, 1, 1, 0, 0, 2])
+        chunks.append(chunk("RGBA", Data([64, 145, 178, 98, 64, 145, 178, 255]) + Data(repeating: 0, count: 1016)))
+        chunks.append(chunk("MATL", i32(1) + dictionary(["_type": "_glass", "_ior": "1.5"])))
+        try file(chunks).write(to: source)
+        let original = EditorModel()
+        try original.importVOX(from: source)
+        original.selectAllOnActiveLayer()
+        let fragment = try XCTUnwrap(original.selectionFragment())
+        let bytes = try fragment.encoded()
+
+        let destination = EditorModel()
+        destination.newProject()
+        let anchor = Cell(5, 7, -3)
+        XCTAssertTrue(destination.beginPaste(try VoxelFragment.decode(bytes)))
+        destination.updatePasteAnchor(anchor)
+        XCTAssertTrue(destination.commitPaste())
+        let matching = try XCTUnwrap(destination.visibleCells[anchor])
+        XCTAssertEqual(matching.surface, VoxSurface(alpha: 98, properties: ["_type": "_glass", "_ior": "1.5"]))
+        XCTAssertEqual(destination.visibleCells[anchor.offset(1, 0, 0)]?.hex, matching.hex)
+        XCTAssertNotEqual(destination.visibleCells[anchor.offset(1, 0, 0)], matching)
+
+        let native = folder.appendingPathComponent("Transferred.vxl")
+        try destination.saveProject(to: native)
+        let reopened = EditorModel()
+        try reopened.loadProject(from: native)
+        XCTAssertEqual(reopened.visibleCells, destination.visibleCells)
+        let exported = folder.appendingPathComponent("Transferred.vox")
+        try reopened.exportVOX(to: exported)
+        let scene = try MagicaVoxel.decode(Data(contentsOf: exported))
+        XCTAssertEqual(scene.layers.first?.cells, destination.visibleCells)
+        XCTAssertEqual(original.visibleCells.count, 2)
+    }
+
     func testImportedFileCanBeEditedAndSavedWithoutOverwritingSource() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)

@@ -51,7 +51,7 @@ struct Ink: Hashable, Codable {
         Color(.sRGB, red: Double(r), green: Double(g), blue: Double(b))
     }
 
-    fileprivate var isValid: Bool {
+    var isValid: Bool {
         [r, g, b].allSatisfy { $0.isFinite && (0...1).contains($0) }
     }
 }
@@ -150,6 +150,7 @@ final class EditorModel: ObservableObject {
 
     @Published private(set) var layers: [VoxelLayer] {
         didSet {
+            cancelPaste()
             merged = nil
             clipped = nil
             revision &+= 1
@@ -168,6 +169,9 @@ final class EditorModel: ObservableObject {
     @Published var mirrorX = false
     @Published var mirrorZ = false
     @Published private(set) var selection: Set<Cell> = []
+    @Published private(set) var pendingPaste: VoxelFragment?
+    @Published private(set) var pasteAnchor: Cell?
+    @Published private(set) var pasteAllowed = false
     @Published var ink = Ink(hex: "E96555")
     @Published var showGrid = true
     @Published var showEdges = false
@@ -254,6 +258,7 @@ final class EditorModel: ObservableObject {
     }
 
     private func sliceDidChange() {
+        cancelPaste()
         endStroke()
         clipped = nil
         pruneSelection()
@@ -265,6 +270,7 @@ final class EditorModel: ObservableObject {
     var canRedo: Bool { !redoStack.isEmpty && stroke?.changes.isEmpty != false }
 
     func beginStroke() {
+        cancelPaste()
         endStroke()
         stroke = Stroke(layer: activeLayerID)
     }
@@ -375,10 +381,12 @@ final class EditorModel: ObservableObject {
     }
 
     func clearSelection() {
+        cancelPaste()
         if !selection.isEmpty { selection = [] }
     }
 
     func select(_ cells: Set<Cell>, mode: SelectionMode = .replace) {
+        guard pendingPaste == nil else { return }
         guard tool == .select, let index = visibleActiveLayerIndex else { clearSelection(); return }
         let eligible = cells.filter { ownsVisibleCell($0, in: index) }
         let result: Set<Cell>
@@ -391,6 +399,7 @@ final class EditorModel: ObservableObject {
     }
 
     func selectAllOnActiveLayer() {
+        cancelPaste()
         tool = .select
         guard let index = visibleActiveLayerIndex else { clearSelection(); return }
         var visible = Set(layers[index].cells.keys.filter { isEditableHeight($0.y) })
@@ -406,7 +415,7 @@ final class EditorModel: ObservableObject {
 
     func canMoveSelection(by delta: Cell) -> Bool {
         let span = (1 - Cell.gridSize)..<Cell.gridSize
-        guard tool == .select, visibleActiveLayerIndex != nil, !selection.isEmpty,
+        guard pendingPaste == nil, tool == .select, visibleActiveLayerIndex != nil, !selection.isEmpty,
               delta != Cell(0, 0, 0), span.contains(delta.x), span.contains(delta.y), span.contains(delta.z) else {
             return false
         }
@@ -499,6 +508,7 @@ final class EditorModel: ObservableObject {
     }
 
     private func record(_ change: Change) {
+        cancelPaste()
         let nextState = UUID()
         undoStack.append(Entry(change: change, before: currentState, after: nextState))
         if undoStack.count > 100 { undoStack.removeFirst() }
@@ -508,6 +518,7 @@ final class EditorModel: ObservableObject {
     }
 
     func undo() {
+        cancelPaste()
         endStroke()
         guard let entry = undoStack.popLast() else { return }
         replay(entry.change, forward: false)
@@ -517,6 +528,7 @@ final class EditorModel: ObservableObject {
     }
 
     func redo() {
+        cancelPaste()
         endStroke()
         guard let entry = redoStack.popLast() else { return }
         replay(entry.change, forward: true)
@@ -792,7 +804,7 @@ final class EditorModel: ObservableObject {
 extension EditorModel {
     @discardableResult
     func duplicateSelection() -> Bool {
-        guard tool == .select, let index = visibleActiveLayerIndex,
+        guard pendingPaste == nil, tool == .select, let index = visibleActiveLayerIndex,
               let bounds = BrushBox(enclosing: selection) else { return false }
         let size = bounds.size
         let offsets = [Cell(size.x, 0, 0), Cell(-size.x, 0, 0), Cell(0, 0, size.z),
@@ -814,7 +826,7 @@ extension EditorModel {
 
     @discardableResult
     func rotateSelection(around axis: VoxelAxis) -> Bool {
-        guard tool == .select, let index = visibleActiveLayerIndex,
+        guard pendingPaste == nil, tool == .select, let index = visibleActiveLayerIndex,
               let bounds = BrushBox(enclosing: selection) else { return false }
         let occupied = visibleCells
         let otherLayers = layers.filter { $0.isVisible && $0.id != activeLayerID }
@@ -946,5 +958,80 @@ extension EditorModel {
         if let selected { selection = selected }
         record(.voxels(layers[index].id, changes, selectionBefore: previous, selectionAfter: selected))
         return true
+    }
+}
+
+extension EditorModel {
+    func selectionFragment() -> VoxelFragment? {
+        guard pendingPaste == nil, tool == .select, let index = visibleActiveLayerIndex,
+              selection.count <= VoxelFragment.maxCells, let box = BrushBox(enclosing: selection) else { return nil }
+        var cells: [Cell: Ink] = [:]
+        cells.reserveCapacity(selection.count)
+        for source in selection {
+            guard ownsVisibleCell(source, in: index), let ink = layers[index].cells[source] else { return nil }
+            cells[source.offset(-box.min.x, -box.min.y, -box.min.z)] = ink
+        }
+        return VoxelFragment(origin: box.min, cells: cells)
+    }
+
+    @discardableResult
+    func deleteSelection() -> Bool {
+        guard pendingPaste == nil, tool == .select, let index = visibleActiveLayerIndex, !selection.isEmpty else { return false }
+        var changes: [Cell: Delta] = [:]
+        changes.reserveCapacity(selection.count)
+        for cell in selection {
+            guard ownsVisibleCell(cell, in: index), let ink = layers[index].cells[cell] else { return false }
+            changes[cell] = Delta(before: ink, after: nil)
+        }
+        return commit(changes, in: index, selecting: [])
+    }
+
+    @discardableResult
+    func beginPaste(_ fragment: VoxelFragment) -> Bool {
+        guard visibleActiveLayerIndex != nil else { return false }
+        endStroke()
+        cancelPaste()
+        tool = .select
+        pendingPaste = fragment
+        updatePasteAnchor(fragment.origin)
+        return true
+    }
+
+    func updatePasteAnchor(_ anchor: Cell?) {
+        guard let fragment = pendingPaste, anchor != pasteAnchor else { return }
+        pasteAnchor = anchor
+        pasteAllowed = anchor.map { fits(fragment, at: $0) } ?? false
+    }
+
+    private func fits(_ fragment: VoxelFragment, at anchor: Cell) -> Bool {
+        guard anchor.inBounds, visibleActiveLayerIndex != nil else { return false }
+        let last = anchor.offset(fragment.size).offset(-1, -1, -1)
+        guard last.inBounds, isEditableHeight(last.y) else { return false }
+        let occupied = visibleCells
+        // On a sparse destination, hover checks should scale with the smaller of the two collections.
+        if occupied.count < fragment.cells.count {
+            return occupied.keys.allSatisfy { fragment.cells[$0.offset(-anchor.x, -anchor.y, -anchor.z)] == nil }
+        }
+        return fragment.cells.keys.allSatisfy { occupied[anchor.offset($0)] == nil }
+    }
+
+    func cancelPaste() {
+        guard pendingPaste != nil else { return }
+        pendingPaste = nil
+        pasteAnchor = nil
+        pasteAllowed = false
+    }
+
+    @discardableResult
+    func commitPaste() -> Bool {
+        guard let fragment = pendingPaste, let anchor = pasteAnchor, let index = visibleActiveLayerIndex,
+              fits(fragment, at: anchor) else { return false }
+        var changes: [Cell: Delta] = [:]
+        changes.reserveCapacity(fragment.cells.count)
+        for (offset, ink) in fragment.cells {
+            changes[anchor.offset(offset)] = Delta(before: nil, after: ink)
+        }
+        cancelPaste()
+        return commit(changes, in: index, selecting: Set(changes.keys))
     }
 }

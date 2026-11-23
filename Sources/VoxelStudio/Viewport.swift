@@ -335,13 +335,25 @@ final class StudioViewportSurface: NSView {
     private var modelingDrag: ModelingDrag?
     private var modelingFaces: [VoxelFace] = []
     private var selectionDrag: SelectionDrag?
+    private var pressedFragment: VoxelFragment?
+    private var displayedFragment: VoxelFragment?
     private var displayedSelection = Set<Cell>()
     private var selectionFaces = [VoxelFace]()
     fileprivate var moveOffset = Cell(0,0,0)
     fileprivate var moveAllowed = false
     fileprivate var hasMovePreview: Bool { moveOffset != Cell(0,0,0) }
     fileprivate var moveTint: V4 { moveAllowed ? validMoveTint : invalidMoveTint }
-    private enum Gesture { case paint, orbit, pan, select, modeling }
+    fileprivate var previewingPaste: Bool { model.pendingPaste != nil }
+    // Both renderers use the cached mesh, translated to the destination and optionally recolored.
+    fileprivate var ghostPlacement: (offset: Cell, allowed: Bool, tint: V4?)? {
+        if previewingPaste {
+            guard let anchor = model.pasteAnchor else { return nil }
+            return (anchor, model.pasteAllowed, model.pasteAllowed ? nil : invalidMoveTint)
+        }
+        guard hasMovePreview else { return nil }
+        return (moveOffset, moveAllowed, moveTint)
+    }
+    private enum Gesture { case paint, orbit, pan, select, modeling, paste }
     var projectTitle: String { model.title }
     private var gesture: Gesture?
     override var acceptsFirstResponder: Bool { true }
@@ -388,17 +400,18 @@ final class StudioViewportSurface: NSView {
     func synchronize(model: EditorModel, camera: OrbitCamera) {
         self.model = model
         self.camera = camera
-        if gesture == .paint && (strokeTool != model.tool || strokeLayer != model.activeLayerID ||
+        if gesture == .paste && pressedFragment !== model.pendingPaste { cancelPasteGesture() }
+        if gesture == .paint && (previewingPaste || strokeTool != model.tool || strokeLayer != model.activeLayerID ||
                                  strokeSlice != (model.sliceEnabled ? model.sliceLevel : nil)) {
             cancelPointerGesture()
         }
-        if gesture == .select && (model.tool != .select || revision != model.revision ||
+        if gesture == .select && (previewingPaste || model.tool != .select || revision != model.revision ||
                                   selectionDrag?.layerID != model.activeLayerID || displayedSelection != model.selection ||
                                   requestedFrame != camera.framing || selectionDrag?.projection != projection) {
             cancelSelectionDrag()
         }
         if let drag = modelingDrag,
-           drag.tool != model.tool || drag.layerID != model.activeLayerID || revision != model.revision ||
+           previewingPaste || drag.tool != model.tool || drag.layerID != model.activeLayerID || revision != model.revision ||
            requestedFrame != camera.framing || drag.projection != projection {
             cancelModeling(duringViewUpdate: true)
         }
@@ -423,16 +436,26 @@ final class StudioViewportSurface: NSView {
     }
 
     private func updateSelectionShell() {
-        let cells = model.tool == .select ? model.selection : []
-        guard cells != displayedSelection else { return }
+        let fragment = model.pendingPaste
+        let cells = fragment == nil && model.tool == .select ? model.selection : []
+        guard fragment !== displayedFragment || cells != displayedSelection else { return }
+        displayedFragment = fragment
         displayedSelection = cells
-        selectionFaces.removeAll(keepingCapacity: !cells.isEmpty)
-        for c in cells {
+        selectionFaces.removeAll(keepingCapacity: false)
+        // Keep this mesh in local coordinates: moving a paste preview only changes its offset.
+        func appendFaces(at c: Cell, tint: V4, occupied: (Cell) -> Bool) {
             let pos = SIMD3(c.x,c.y,c.z)
-            for (side, n) in normalOffsets.enumerated() where !cells.contains(cell(pos &+ n)) {
-                selectionFaces.append(VoxelFace(base: V4(float3(pos), Float(side)), color: selectionTint,
+            for (side, n) in normalOffsets.enumerated() where !occupied(cell(pos &+ n)) {
+                selectionFaces.append(VoxelFace(base: V4(float3(pos), Float(side)), color: tint,
                                                 ao: V4(repeating: 1), extent: V4(1,1,1,2)))
             }
+        }
+        if let fragment {
+            for (c, ink) in fragment.cells {
+                appendFaces(at: c, tint: V4(ink.r, ink.g, ink.b, 0.64)) { fragment.cells[$0] != nil }
+            }
+        } else {
+            for c in cells { appendFaces(at: c, tint: selectionTint, occupied: cells.contains) }
         }
         painter?.setSelection(selectionFaces)
     }
@@ -481,6 +504,7 @@ final class StudioViewportSurface: NSView {
     fileprivate var edgesEnabled: Bool { model.showEdges }
 
     fileprivate var hoverFaces: [VoxelFace] {
+        if previewingPaste { return [] }
         if gesture == .modeling { return modelingFaces }
         guard let point = hoverPoint, gesture != .orbit, gesture != .pan, gesture != .select else { return [] }
         let pick = pick(at: point, using: strokeVoxels)
@@ -527,7 +551,26 @@ final class StudioViewportSurface: NSView {
     }
 
     private func point(_ e: NSEvent) -> CGPoint { convert(e.locationInWindow, from: nil) }
-    override func mouseMoved(with e: NSEvent) { hoverPoint = point(e); redraw() }
+    override func mouseMoved(with e: NSEvent) {
+        hoverPoint = point(e)
+        if gesture == nil { positionPaste(at: point(e)) }
+        redraw()
+    }
+
+    private func positionPaste(at p: CGPoint) {
+        guard let fragment = model.pendingPaste else { return }
+        let hit = pick(at: p)
+        guard bounds.contains(p), var anchor = hit.adjacent else {
+            model.updatePasteAnchor(nil)
+            return
+        }
+        // An outward-facing negative side touches the high end of the fragment's bounds.
+        let n = hit.normal
+        if n.x < 0 { anchor.x -= fragment.size.x - 1 }
+        if n.y < 0 { anchor.y -= fragment.size.y - 1 }
+        if n.z < 0 { anchor.z -= fragment.size.z - 1 }
+        model.updatePasteAnchor(anchor)
+    }
     override func mouseEntered(with e: NSEvent) { mouseMoved(with: e) }
     override func mouseExited(with e: NSEvent) { hoverPoint = nil; redraw() }
 
@@ -537,7 +580,12 @@ final class StudioViewportSurface: NSView {
         synchronize(model: model, camera: camera)
         if e.modifierFlags.contains(.shift) { gesture = .pan }
         else if e.modifierFlags.contains(.option) { gesture = .orbit }
-        else if model.tool == .select {
+        else if let fragment = model.pendingPaste {
+            pressedFragment = fragment
+            gesture = .paste
+            positionPaste(at: point(e))
+            redraw()
+        } else if model.tool == .select {
             let start = point(e)
             let pick = pick(at: start)
             let additive = e.modifierFlags.contains(.command)
@@ -774,7 +822,13 @@ final class StudioViewportSurface: NSView {
         if gesture == .select { gesture = nil }
     }
 
+    private func cancelPasteGesture() {
+        pressedFragment = nil
+        if gesture == .paste { gesture = nil }
+    }
+
     private func cancelPointerGesture() {
+        if gesture == .paste { cancelPasteGesture() }
         if gesture == .select { cancelSelectionDrag() }
         if gesture == .modeling { cancelModeling() }
         if gesture == .paint {
@@ -786,7 +840,10 @@ final class StudioViewportSurface: NSView {
     }
 
     override func cancelOperation(_ sender: Any?) {
-        if gesture == .modeling { cancelModeling() }
+        if previewingPaste {
+            cancelPasteGesture()
+            model.cancelPaste()
+        } else if gesture == .modeling { cancelModeling() }
         else if gesture == .select { cancelSelectionDrag() }
         else if model.tool == .select { model.clearSelection() }
         else { super.cancelOperation(sender); return }
@@ -794,14 +851,18 @@ final class StudioViewportSurface: NSView {
     }
 
     override func keyDown(with e: NSEvent) {
-        if e.keyCode == 53, model.tool == .select || gesture == .modeling { cancelOperation(self) }
+        if e.keyCode == 53, previewingPaste || model.tool == .select || gesture == .modeling { cancelOperation(self) }
         else { super.keyDown(with: e) }
     }
 
     override func mouseDragged(with e: NSEvent) {
+        if previewingPaste && (gesture == .select || gesture == .modeling || gesture == .paint) {
+            synchronize(model: model, camera: camera)
+        }
         switch gesture {
         case .paint: applyStroke(at: point(e))
         case .select: updateSelectionDrag(at: point(e))
+        case .paste: positionPaste(at: point(e)); redraw()
         case .modeling: updateModeling(at: point(e))
         case .pan:
             let v = projection
@@ -816,7 +877,17 @@ final class StudioViewportSurface: NSView {
     override func rightMouseDragged(with e: NSEvent) { mouseDragged(with: e) }
     override func otherMouseDragged(with e: NSEvent) { mouseDragged(with: e) }
     override func mouseUp(with e: NSEvent) {
-        if gesture == .modeling { synchronize(model: model, camera: camera) }
+        // A keyboard command may have changed the active interaction since mouse-down.
+        synchronize(model: model, camera: camera)
+        if gesture == .paste {
+            let canPlace = e.type == .leftMouseUp && pressedFragment === model.pendingPaste
+            cancelPasteGesture()
+            if canPlace {
+                positionPaste(at: point(e))
+                if !model.commitPaste() { NSSound.beep() }
+            }
+            synchronize(model: model, camera: camera)
+        }
         if gesture == .modeling { finishModeling(at: point(e)) }
         if gesture == .paint { model.endStroke() }
         if gesture == .select { finishSelection(at: point(e)) }
@@ -900,17 +971,18 @@ final class StudioViewportSurface: NSView {
         var geometry = scene.faces
         var invalidPreview = [VoxelFace]()
         if includeEditorOverlays {
-            geometry.append(contentsOf: selectionFaces)
             geometry.append(contentsOf: hoverFaces)
-            if hasMovePreview {
-                let delta = V4(Float(moveOffset.x), Float(moveOffset.y), Float(moveOffset.z), 0)
+            if !previewingPaste { geometry.append(contentsOf: selectionFaces) }
+            if let placement = ghostPlacement {
+                let offset = placement.offset
+                let delta = V4(Float(offset.x), Float(offset.y), Float(offset.z), 0)
                 let preview = selectionFaces.map { f -> VoxelFace in
                     var ghost = f
                     ghost.base += delta
-                    ghost.color = moveTint
+                    if let tint = placement.tint { ghost.color = tint }
                     return ghost
                 }
-                if moveAllowed { geometry.append(contentsOf: preview) }
+                if placement.allowed { geometry.append(contentsOf: preview) }
                 else { invalidPreview = preview }
             }
         }
@@ -1091,15 +1163,17 @@ private final class MetalPainter: NSObject, MTKViewDelegate {
             }
         }
         if let selectedInstances, selectedCount > 0 {
-            enc.setDepthStencilState(hoverDepth)
             enc.setVertexBuffer(selectedInstances, offset: 0, index: 0)
-            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: selectedCount)
-            if surface.hasMovePreview {
-                let d = surface.moveOffset
+            if !surface.previewingPaste {
+                enc.setDepthStencilState(hoverDepth)
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: selectedCount)
+            }
+            if let placement = surface.ghostPlacement {
+                let d = placement.offset
                 u.overlayOffset = V4(Float(d.x),Float(d.y),Float(d.z),0)
-                u.overlayTint = surface.moveTint
+                u.overlayTint = placement.tint ?? .zero
                 enc.setVertexBytes(&u, length: MemoryLayout<MetalUniforms>.stride, index: 1)
-                enc.setDepthStencilState(surface.moveAllowed ? hoverDepth : throughDepth)
+                enc.setDepthStencilState(placement.allowed ? hoverDepth : throughDepth)
                 enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: selectedCount)
             }
         }

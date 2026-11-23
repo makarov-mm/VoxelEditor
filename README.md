@@ -2,7 +2,7 @@
 
 Forma is a native Swift and Metal editor for building, painting, and editing voxel models on a 256 × 256 × 256 grid. Organize a scene into layers, sample colors directly from a model, and exchange `.vox` files with MagicaVoxel. The canvas and inspector follow the Mac’s light or dark appearance.
 
-![Northern Lighthouse in Forma, with the voxel tools, color palette, and five scene layers visible](Media/Northern-Lighthouse.png)
+![Northern Lighthouse in Forma, with a spruce ready to paste on the Vegetation layer](Media/Northern-Lighthouse.png)
 
 **See it in action.** A 35-second demo shows how to build a flowering cactus from an empty grid, paint its details, and orbit the finished model. [Watch the demo (MP4)](Media/Drawing-demo.mp4) · [Get the finished model (VOX)](Media/Desert-Bloom.vox)
 
@@ -51,6 +51,14 @@ Drag a selected voxel along the plane of the face you grabbed. For a one-voxel m
 
 To reuse a detail, select it and press **⌘D**. Forma places the copy next to the original and selects the copy so you can move it immediately. In the inspector, choose **X**, **Y**, or **Z** to turn the selection 90° around that axis. A completed duplication or rotation takes one undo step.
 
+## Copy details between layers and projects
+
+1. Press **S** and select a detail on the active layer. **⌘C** copies it to the macOS clipboard. **⌘X** cuts it. **Delete** removes the selection and keeps the clipboard contents.
+2. Choose the destination layer, or open another Forma project. Press **⌘V** to preview the fragment at its original coordinates. Press **Return** immediately to place it there.
+3. To place it elsewhere, move the pointer over a voxel face or the work plane and click. For one-cell adjustments, use the arrow keys for X and Z or **Page Up / Page Down** for Y, then press **Return**. A red preview marks a collision, the grid boundary, or the slice limit. Press **Esc** to cancel.
+
+A fragment can contain up to two million voxels and preserves each voxel’s color and MagicaVoxel material. Once placed, the fragment is selected for moving or rotating. Cut, Delete, and Paste each take one undo step. To transfer a detail to another layer at the same coordinates, cut it before switching layers.
+
 ## Shapes, extrusion, and fill
 
 - **Line (L)** draws between two cells on the face or work plane where you start dragging.
@@ -93,7 +101,7 @@ swift run Forma   # Launch the editor
 swift test        # Run the editing, file-format, and PNG export tests
 ```
 
-The interface uses SwiftUI and AppKit. The viewport uses MetalKit with a Core Graphics fallback when Metal is unavailable. The tests cover brush and shape edits, selection transforms and undo, layer and slice visibility, PNG rendering, and MagicaVoxel round trips.
+The interface uses SwiftUI and AppKit. The viewport uses MetalKit with a Core Graphics fallback when Metal is unavailable. The tests cover brush and shape edits, selection transforms and undo, clipboard round trips and placement, layer and slice visibility, PNG rendering, and MagicaVoxel round trips.
 
 ## License
 

@@ -21,7 +21,11 @@ struct Inspector: View {
             Rule()
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    brush
+                    if let fragment = model.pendingPaste {
+                        pasteControls(fragment)
+                    } else {
+                        brush
+                    }
                     Rule()
                     sliceSection
                     Rule()
@@ -89,6 +93,30 @@ struct Inspector: View {
                     mirrorAxis("Z", enabled: $model.mirrorZ)
                 }
             }
+        }.padding(.horizontal, 18).padding(.vertical, 16)
+    }
+
+    private func pasteControls(_ fragment: VoxelFragment) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Paste voxels", systemImage: "doc.on.clipboard")
+                .font(.system(size: 13, weight: .semibold)).foregroundStyle(StudioStyle.green)
+            let count = fragment.cells.count
+            Text("\(count.formatted()) \(count == 1 ? "voxel" : "voxels")")
+                .font(.system(size: 12)).monospacedDigit()
+            if let p = model.pasteAnchor {
+                Text("X \(p.x)   Y \(p.y)   Z \(p.z)")
+                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(StudioStyle.secondary)
+            }
+            if model.pasteAnchor != nil && !model.pasteAllowed {
+                Text("Choose an empty position within the grid and current slice.")
+                    .font(.caption).foregroundStyle(StudioStyle.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 7) {
+                Button("Place") { _ = model.commitPaste() }.disabled(!model.pasteAllowed)
+                    .help("Place the voxels at the preview position (Return)")
+                Button("Cancel") { model.cancelPaste() }.help("Cancel placement (Esc)")
+            }.controlSize(.small)
         }.padding(.horizontal, 18).padding(.vertical, 16)
     }
 
@@ -243,6 +271,11 @@ private struct SelectionControls: View {
                         .help("Rotate the selection 90° around \(label)")
                 }
             }.disabled(model.selection.isEmpty)
+            HStack(spacing: 6) {
+                Button("Cut") { ui.copySelection(model, cutting: true) }.help("Cut selected voxels (⌘X)")
+                Button("Copy") { ui.copySelection(model) }.help("Copy selected voxels (⌘C)")
+                Button("Delete") { _ = model.deleteSelection() }.help("Delete selected voxels (Delete)")
+            }.controlSize(.small).disabled(model.selection.isEmpty)
             Button { ui.duplicate(model) } label: {
                 Label("Duplicate", systemImage: "plus.square.on.square")
             }.controlSize(.small).disabled(model.selection.isEmpty)

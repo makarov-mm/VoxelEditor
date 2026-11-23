@@ -72,7 +72,17 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         guard event.window === window, window?.attachedSheet == nil, NSApp.modalWindow == nil,
               !(window?.firstResponder is NSTextView),
               event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else { return false }
-        if model.tool == .select, !model.selection.isEmpty {
+        if model.pendingPaste != nil {
+            switch event.keyCode {
+            case 53: model.cancelPaste(); return true
+            case 36, 76:
+                if !model.commitPaste() { NSSound.beep() }
+                return true
+            case 51, 117: return true
+            default: break
+            }
+        }
+        if model.tool == .select, model.pendingPaste != nil || !model.selection.isEmpty {
             let delta: Cell?
             switch event.keyCode {
             case 123: delta = Cell(-1, 0, 0)
@@ -81,13 +91,21 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             case 126: delta = Cell(0, 0, -1)
             case 116: delta = Cell(0, 1, 0)
             case 121: delta = Cell(0, -1, 0)
+            case 51, 117:
+                _ = model.deleteSelection()
+                return true
             case 53 where !(window?.firstResponder is StudioViewportSurface):
                 model.clearSelection()
                 return true
             default: delta = nil
             }
             if let delta {
-                ui.nudge(delta, in: model)
+                if let fragment = model.pendingPaste {
+                    let anchor = model.pasteAnchor ?? fragment.origin
+                    model.updatePasteAnchor(anchor.offset(delta))
+                } else {
+                    ui.nudge(delta, in: model)
+                }
                 return true
             }
         }
@@ -165,6 +183,7 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         item(edit, "Cut", #selector(NSText.cut(_:)), "x")
         item(edit, "Copy", #selector(NSText.copy(_:)), "c")
         item(edit, "Paste", #selector(NSText.paste(_:)), "v")
+        item(edit, "Delete Voxels", #selector(deleteVoxels), target: self)
         item(edit, "Select All", #selector(NSText.selectAll(_:)), "a")
         item(edit, "Deselect Voxels", #selector(deselectVoxels), target: self)
         edit.addItem(.separator())
@@ -205,9 +224,29 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     @objc private func importVox() { model.importVOX() }
     @objc private func exportVox() { model.exportVOX() }
     @objc private func exportPng() { camera.exportPNG() }
-    // The responder chain handles text selection first in text fields and system panels.
+    // AppKit routes these standard actions to text editors and system panels before the delegate.
+    @objc func cut(_ sender: Any?) {
+        guard editingCanvas else { return }
+        ui.copySelection(model, cutting: true)
+    }
+
+    @objc func copy(_ sender: Any?) {
+        guard editingCanvas else { return }
+        ui.copySelection(model)
+    }
+
+    @objc func paste(_ sender: Any?) {
+        guard editingCanvas else { return }
+        ui.startPaste(in: model)
+    }
+
+    @objc private func deleteVoxels() {
+        guard editingCanvas, model.pendingPaste == nil else { return }
+        _ = model.deleteSelection()
+    }
+
     @objc func selectAll(_ sender: Any?) {
-        guard NSApp.keyWindow === window, window?.attachedSheet == nil else { return }
+        guard editingCanvas, model.pendingPaste == nil else { return }
         model.selectAllOnActiveLayer()
     }
     @objc private func deselectVoxels() { model.clearSelection() }
@@ -251,11 +290,14 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         case #selector(redoEdit):
             if let text = NSApp.keyWindow?.firstResponder as? NSTextView { return text.undoManager?.canRedo ?? false }
             return model.canRedo
+        case #selector(paste(_:)):
+            return editingCanvas && ui.canPaste(into: model)
         case #selector(selectAll(_:)):
-            return NSApp.keyWindow === window && window?.attachedSheet == nil &&
+            return editingCanvas && model.pendingPaste == nil &&
                 model.layers.contains { $0.id == model.activeLayerID && $0.isVisible && !$0.cells.isEmpty }
-        case #selector(deselectVoxels), #selector(duplicateSelection), #selector(rotateSelection(_:)):
-            return editingCanvas && !model.selection.isEmpty
+        case #selector(cut(_:)), #selector(copy(_:)), #selector(deleteVoxels),
+             #selector(deselectVoxels), #selector(duplicateSelection), #selector(rotateSelection(_:)):
+            return editingCanvas && model.pendingPaste == nil && !model.selection.isEmpty
         case #selector(chooseTool(_:)):
             menuItem.state = menuItem.representedObject as? String == model.tool.rawValue ? .on : .off
             return editingCanvas

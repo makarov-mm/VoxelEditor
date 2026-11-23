@@ -2,8 +2,61 @@ import AppKit
 import SwiftUI
 
 final class StudioUI: ObservableObject {
+    private static let fragmentType = NSPasteboard.PasteboardType("studio.forma.voxel.fragment.v1")
+    let pasteboard: NSPasteboard
+
+    init(pasteboard: NSPasteboard = .general) {
+        self.pasteboard = pasteboard
+    }
+
     @Published var showingHelp = false
     @Published var selectionNotice: String?
+
+    func canPaste(into model: EditorModel) -> Bool {
+        model.pendingPaste == nil && model.layers.contains { $0.id == model.activeLayerID && $0.isVisible } &&
+            pasteboard.availableType(from: [Self.fragmentType]) != nil
+    }
+
+    func copySelection(_ model: EditorModel, cutting: Bool = false) {
+        guard model.pendingPaste == nil, !model.selection.isEmpty else { return }
+        guard let fragment = model.selectionFragment() else {
+            selectionNotice = model.selection.count > VoxelFragment.maxCells
+                ? "Copy a smaller selection (up to \(VoxelFragment.maxCells.formatted()) voxels)."
+                : "Select editable voxels on the active layer to copy."
+            return
+        }
+        do {
+            let data = try fragment.encoded()
+            let item = NSPasteboardItem()
+            guard item.setData(data, forType: Self.fragmentType) else {
+                selectionNotice = "The clipboard could not prepare these voxels. Try copying again."
+                return
+            }
+            pasteboard.clearContents()
+            guard pasteboard.writeObjects([item]) else {
+                selectionNotice = "The clipboard is unavailable. Try copying again."
+                return
+            }
+            if cutting { _ = model.deleteSelection() }
+            selectionNotice = nil
+        } catch {
+            selectionNotice = "Copy a smaller selection and try again. " + error.localizedDescription
+        }
+    }
+
+    func startPaste(in model: EditorModel) {
+        guard canPaste(into: model) else { return }
+        guard let data = pasteboard.data(forType: Self.fragmentType) else {
+            selectionNotice = "The copied voxels could not be read. Copy the fragment again."
+            return
+        }
+        do {
+            let fragment = try VoxelFragment.decode(data)
+            selectionNotice = model.beginPaste(fragment) ? nil : "Choose a visible layer to paste into."
+        } catch {
+            selectionNotice = error.localizedDescription
+        }
+    }
 
     func duplicate(_ model: EditorModel) {
         selectionNotice = model.duplicateSelection() ? nil : "There is no room for a copy beside this selection."
@@ -184,10 +237,21 @@ struct StudioView: View {
         }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Camera view")
     }
 
+    private var pasteHint: String {
+        guard model.pasteAnchor != nil else { return "Move the pointer to a face or the grid · Esc cancels" }
+        return model.pasteAllowed ? "Click or press Return to place · Esc cancels"
+            : "Position blocked · Move to empty space inside the editable grid"
+    }
+
     private var status: some View {
         HStack(spacing: 8) {
             Circle().fill(StudioStyle.green).frame(width: 5, height: 5)
-            if let readout = camera.gestureReadout {
+            if model.pendingPaste != nil {
+                Text("Paste").fontWeight(.medium)
+                Text(pasteHint).lineLimit(1)
+            } else if let notice = ui.selectionNotice {
+                Text(notice).lineLimit(1).help(notice)
+            } else if let readout = camera.gestureReadout {
                 Text(readout).fontWeight(.medium).monospacedDigit().lineLimit(1)
             } else {
                 Text(model.tool.label).fontWeight(.medium)
@@ -229,8 +293,12 @@ private struct HelpCard: View {
                     row("Brush size / box depth", "[   ]")
                     row("Toggle selected voxel", "⌘ + click")
                     row("Add to selection", "⌘ + box drag")
-                    row("Nudge X / Z", "← → / ↑ ↓")
-                    row("Nudge Y", "Page Up / Down")
+                    row("Nudge selection or paste X / Z", "← → / ↑ ↓")
+                    row("Nudge selection or paste Y", "Page Up / Down")
+                    row("Cut / copy / paste voxels", "⌘X / ⌘C / ⌘V")
+                    row("Place pasted voxels", "Click or Return")
+                    row("Cancel placement", "Esc")
+                    row("Delete selection", "Delete")
                     row("Duplicate selection", "⌘D")
                     row("Grid / edges", "G / W")
                     row("Slice view", "Y")

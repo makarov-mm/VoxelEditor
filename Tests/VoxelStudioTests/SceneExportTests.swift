@@ -31,39 +31,64 @@ final class SceneExportTests: XCTestCase {
     }
 
     @MainActor
+    private func exportedPixels(_ camera: OrbitCamera, surface: StudioViewportSurface) throws -> Data {
+        let image = try exportedImage(camera, keeping: surface)
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+            bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return Data(bytes: try XCTUnwrap(context.data), count: context.bytesPerRow * image.height)
+    }
+
+    @MainActor
     func testExportOmitsSelectionAndImmediatelyReflectsLayerVisibility() async throws {
         let model = EditorModel(), camera = OrbitCamera()
         model.newProject()
         let surface = StudioViewportSurface(model: model, camera: camera)
         surface.frame = CGRect(x: 0, y: 0, width: 240, height: 160)
-        func exportedPixels() throws -> Data {
-            let image = try exportedImage(camera, keeping: surface)
-            let context = try XCTUnwrap(CGContext(
-                data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
-                bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-            return Data(bytes: try XCTUnwrap(context.data), count: context.bytesPerRow * image.height)
-        }
 
         let cell = Cell(0, 0, 0)
         model.ink = Ink(hex: "E02020")
         model.apply(hit: nil, adjacent: cell)
         camera.reset()
-        let base = try exportedPixels()
+        let base = try exportedPixels(camera, surface: surface)
 
         model.tool = .select
         model.select([cell])
         XCTAssertEqual(model.selection, [cell])
-        XCTAssertEqual(try exportedPixels(), base)
+        XCTAssertEqual(try exportedPixels(camera, surface: surface), base)
 
         model.addLayer()
         model.tool = .add
         model.ink = Ink(hex: "23E038")
         model.apply(hit: nil, adjacent: Cell(2, 0, 0))
-        XCTAssertNotEqual(try exportedPixels(), base)
+        XCTAssertNotEqual(try exportedPixels(camera, surface: surface), base)
         model.toggleLayer(model.activeLayerID)
-        XCTAssertEqual(try exportedPixels(), base)
+        XCTAssertEqual(try exportedPixels(camera, surface: surface), base)
+    }
+
+    @MainActor
+    func testPastePreviewIsExcludedFromPNGUntilPlacement() async throws {
+        let model = EditorModel(), camera = OrbitCamera()
+        model.newProject()
+        model.apply(hit: nil, adjacent: Cell(0, 0, 0))
+        model.selectAllOnActiveLayer()
+        let fragment = try XCTUnwrap(model.selectionFragment())
+        let surface = StudioViewportSurface(model: model, camera: camera)
+        surface.frame = CGRect(x: 0, y: 0, width: 200, height: 150)
+        camera.reset()
+        let initial = try exportedPixels(camera, surface: surface)
+        XCTAssertTrue(model.beginPaste(fragment))
+        XCTAssertFalse(model.pasteAllowed)
+        XCTAssertEqual(try exportedPixels(camera, surface: surface), initial)
+        model.updatePasteAnchor(Cell(2, 0, 1))
+        XCTAssertTrue(model.pasteAllowed)
+        XCTAssertEqual(try exportedPixels(camera, surface: surface), initial)
+        XCTAssertTrue(model.commitPaste())
+        XCTAssertNotEqual(try exportedPixels(camera, surface: surface), initial)
+        model.undo()
+        XCTAssertEqual(try exportedPixels(camera, surface: surface), initial)
     }
 
     @MainActor
