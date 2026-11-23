@@ -2,6 +2,8 @@
 
 Forma is a native Swift and Metal editor for building, painting, and editing voxel models on a 256 × 256 × 256 grid. Organize a scene into layers, sample colors directly from a model, and exchange `.vox` files with MagicaVoxel. The canvas and inspector follow the Mac’s light or dark appearance.
 
+![Northern Lighthouse in Forma, with the voxel tools, color palette, and five scene layers visible](Media/Northern-Lighthouse.png)
+
 **See it in action.** A 35-second demo shows how to build a flowering cactus from an empty grid, paint its details, and orbit the finished model. [Watch the demo (MP4)](Media/Drawing-demo.mp4) · [Get the finished model (VOX)](Media/Desert-Bloom.vox)
 
 ## Build and run
