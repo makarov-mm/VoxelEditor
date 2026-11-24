@@ -51,19 +51,20 @@ struct VoxelShape {
     let bounds: BrushBox
     let lineCells: [Cell]
     let cellCount: Int
-    private let cylinder: VoxelCylinder?
+    private let profile: ExtrudedFootprint?
 
     var fitsOperationLimit: Bool { cellCount <= EditorModel.maxShapeCells }
 
-    init?(tool: EditTool, from first: Cell, to last: Cell, normal: Cell = Cell(0, 1, 0)) {
+    init?(tool: EditTool, from first: Cell, to last: Cell, normal: Cell = Cell(0, 1, 0), wallThickness: Int = 0) {
         guard first.inBounds, last.inBounds else { return nil }
-        if tool == .cylinder {
-            guard let shape = VoxelShape(cylinderIn: BrushBox(first, last), normal: normal) else { return nil }
+        if tool == .cylinder || (tool == .box && wallThickness != 0) {
+            guard let shape = VoxelShape(profileFor: tool, in: BrushBox(first, last), normal: normal,
+                                         wallThickness: wallThickness) else { return nil }
             self = shape
             return
         }
         bounds = BrushBox(first, last)
-        cylinder = nil
+        profile = nil
         let size = bounds.size
         switch tool {
         case .line:
@@ -92,24 +93,25 @@ struct VoxelShape {
     }
 
     // A preview may extend beyond the grid. The editing initializer checks both endpoints.
-    init?(cylinderIn bounds: BrushBox, normal: Cell) {
-        guard let cylinder = VoxelCylinder(bounds: bounds, normal: normal) else { return nil }
+    init?(profileFor tool: EditTool, in bounds: BrushBox, normal: Cell, wallThickness: Int) {
+        guard let profile = ExtrudedFootprint(tool: tool, bounds: bounds, normal: normal,
+                                              wallThickness: wallThickness) else { return nil }
         self.bounds = bounds
-        self.cylinder = cylinder
+        self.profile = profile
         lineCells = []
-        cellCount = cylinder.rows.reduce(0) { $0 + $1.count } * cylinder.depth
+        cellCount = profile.rows.joined().reduce(0) { $0 + $1.count } * profile.depth
     }
 
-    func forEachCylinderFace(_ visit: (BrushBox, Cell) -> Void) {
-        cylinder?.forEachFace(visit)
+    func forEachProfileFace(_ visit: (BrushBox, Cell) -> Void) {
+        profile?.forEachFace(visit)
     }
 
     func forEachCell(_ visit: (Cell) -> Void) {
-        if let cylinder {
-            for (row, columns) in cylinder.rows.enumerated() {
-                for column in columns {
-                    for level in 0..<cylinder.depth {
-                        visit(cylinder.cell(column, row, level))
+        if let profile {
+            for (row, spans) in profile.rows.enumerated() {
+                for span in spans {
+                    for column in span {
+                        for level in 0..<profile.depth { visit(profile.cell(column, row, level)) }
                     }
                 }
             }
@@ -127,16 +129,17 @@ struct VoxelShape {
     }
 }
 
-// Store a filled ellipse as one span per row. Depth changes the cell count without
-// expanding the preview into individual voxels.
-private struct VoxelCylinder {
+// A solid row has one span. A row crossing an opening has two. Both geometry and
+// preview use the same spans, regardless of extrusion depth.
+private struct ExtrudedFootprint {
     let origin: Cell
     let axis: VoxelAxis
-    let rows: [Range<Int>]
+    let rows: [[Range<Int>]]
     let depth: Int
 
-    init?(bounds: BrushBox, normal: Cell) {
-        guard Cell.neighbors.contains(normal) else { return nil }
+    init?(tool: EditTool, bounds: BrushBox, normal: Cell, wallThickness: Int) {
+        guard tool == .cylinder || tool == .box, Cell.neighbors.contains(normal),
+              (0...(Cell.gridSize / 2)).contains(wallThickness) else { return nil }
         origin = bounds.min
         let size = bounds.size
         let dimensions = 1...Cell.gridSize
@@ -152,19 +155,46 @@ private struct VoxelCylinder {
             axis = .z
             (width, height, depth) = (size.x, size.y, size.z)
         }
-        let widthSquared = width * width, heightSquared = height * height
-        rows = (0..<height).map { row in
-            let dy = 2 * row + 1 - height
-            var inset = 0
-            while inset < width / 2 {
-                let dx = 2 * inset + 1 - width
-                // Keep the center axes connected to the ends of even, very narrow ellipses.
-                if abs(dx) <= 1 || abs(dy) <= 1 ||
-                    dx * dx * heightSquared + dy * dy * widthSquared <= widthSquared * heightSquared { break }
-                inset += 1
-            }
-            return inset..<(width - inset)
+        let outer = (0..<height).map { row in
+            tool == .box ? 0..<width : Self.ellipseSpan(width: width, height: height, row: row)
         }
+        guard wallThickness > 0, 2 * wallThickness < min(width, height) else {
+            rows = outer.map { [$0] }
+            return
+        }
+
+        // A cell is inside the opening when a voxel disc of the chosen radius fits
+        // around it. A radius-one disc includes the diagonals, keeping stepped walls
+        // face-connected. Work in scanlines so thickness never multiplies by depth.
+        let diameter = wallThickness * 2 + 1
+        let radii = (0..<diameter).map { row in
+            wallThickness - Self.ellipseSpan(width: diameter, height: diameter, row: row).lowerBound
+        }
+        rows = outer.enumerated().map { row, span in
+            let first = row - wallThickness
+            guard first >= 0, row + wallThickness < height else { return [span] }
+            var holeStart = span.lowerBound
+            for (offset, radius) in radii.enumerated() {
+                holeStart = max(holeStart, outer[first + offset].lowerBound + radius)
+            }
+            let holeEnd = width - holeStart
+            guard holeStart < holeEnd else { return [span] }
+            return [span.lowerBound..<holeStart, holeEnd..<span.upperBound]
+        }
+    }
+
+    private static func ellipseSpan(width: Int, height: Int, row: Int) -> Range<Int> {
+        let widthSquared = width * width, heightSquared = height * height
+        let dy = 2 * row + 1 - height
+        var inset = 0
+        while inset < width / 2 {
+            let dx = 2 * inset + 1 - width
+            // Keep the center axes connected to the ends of even, very narrow ellipses.
+            if abs(dx) <= 1 || abs(dy) <= 1 ||
+                dx * dx * heightSquared + dy * dy * widthSquared <= widthSquared * heightSquared { break }
+            inset += 1
+        }
+        return inset..<(width - inset)
     }
 
     private func oriented(_ column: Int, _ row: Int, _ level: Int) -> Cell {
@@ -181,26 +211,29 @@ private struct VoxelCylinder {
 
     func forEachFace(_ visit: (BrushBox, Cell) -> Void) {
         let top = depth - 1
-        for (row, columns) in rows.enumerated() {
-            let left = columns.lowerBound, right = columns.upperBound - 1
-            visit(BrushBox(cell(left, row, 0), cell(right, row, 0)), oriented(0, 0, -1))
-            visit(BrushBox(cell(left, row, top), cell(right, row, top)), oriented(0, 0, 1))
-            visit(BrushBox(cell(left, row, 0), cell(left, row, top)), oriented(-1, 0, 0))
-            visit(BrushBox(cell(right, row, 0), cell(right, row, top)), oriented(1, 0, 0))
-            for step in [-1, 1] {
-                let neighbor = row + step
-                let normal = oriented(0, step, 0)
-                func wall(_ from: Int, _ through: Int) {
-                    if from <= through {
-                        visit(BrushBox(cell(from, row, 0), cell(through, row, top)), normal)
+        for (row, spans) in rows.enumerated() {
+            for span in spans {
+                let left = span.lowerBound, right = span.upperBound - 1
+                visit(BrushBox(cell(left, row, 0), cell(right, row, 0)), oriented(0, 0, -1))
+                visit(BrushBox(cell(left, row, top), cell(right, row, top)), oriented(0, 0, 1))
+                visit(BrushBox(cell(left, row, 0), cell(left, row, top)), oriented(-1, 0, 0))
+                visit(BrushBox(cell(right, row, 0), cell(right, row, top)), oriented(1, 0, 0))
+                for step in [-1, 1] {
+                    let neighbor = row + step
+                    let blockers = rows.indices.contains(neighbor) ? rows[neighbor] : []
+                    let normal = oriented(0, step, 0)
+                    var cursor = left
+                    for blocker in blockers {
+                        let start = max(left, blocker.lowerBound), end = min(span.upperBound, blocker.upperBound)
+                        guard start < end else { continue }
+                        if cursor < start {
+                            visit(BrushBox(cell(cursor, row, 0), cell(start - 1, row, top)), normal)
+                        }
+                        cursor = end
                     }
-                }
-                if rows.indices.contains(neighbor) {
-                    // Only the portions extending past the neighboring row are exposed.
-                    wall(left, rows[neighbor].lowerBound - 1)
-                    wall(rows[neighbor].upperBound, right)
-                } else {
-                    wall(left, right)
+                    if cursor <= right {
+                        visit(BrushBox(cell(cursor, row, 0), cell(right, row, top)), normal)
+                    }
                 }
             }
         }

@@ -195,6 +195,11 @@ final class EditorModel: ObservableObject {
     @Published var showEdges = false
     @Published var brushSize = 1
     @Published var shapeDepth = 1
+    @Published var hollowShapes = false
+    @Published var shapeWallThickness = 1
+    var effectiveWallThickness: Int {
+        hollowShapes ? min(Cell.gridSize / 2, max(1, shapeWallThickness)) : 0
+    }
     @Published var sliceEnabled = false {
         didSet { if oldValue != sliceEnabled { workingViewDidChange() } }
     }
@@ -710,6 +715,8 @@ final class EditorModel: ObservableObject {
         sliceEnabled = false
         sliceLevel = 0
         shapeDepth = 1
+        hollowShapes = false
+        shapeWallThickness = 1
         undoStack.removeAll()
         redoStack.removeAll()
         layers = newLayers
@@ -1031,7 +1038,7 @@ extension EditorModel {
     @discardableResult
     func addShape(tool: EditTool, from: Cell, to: Cell, normal: Cell = Cell(0, 1, 0)) -> Bool {
         guard let index = visibleActiveLayerIndex,
-              let shape = VoxelShape(tool: tool, from: from, to: to, normal: normal),
+              let shape = VoxelShape(tool: tool, from: from, to: to, normal: normal, wallThickness: effectiveWallThickness),
               shape.fitsOperationLimit, isEditableHeight(shape.bounds.max.y) else { return false }
         let occupied = editingCells
         var cells = Set<Cell>()

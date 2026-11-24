@@ -80,7 +80,15 @@ struct Inspector: View {
                 SelectionControls(model: model, ui: ui)
             } else if model.tool.usesShapeDepth {
                 DimensionStepper(title: "Depth", value: $model.shapeDepth, range: 1...Cell.gridSize)
-                    .help("Thickness measured outward from the starting face ([ and ])")
+                    .help("Depth measured outward from the starting face ([ and ])")
+                Toggle("Hollow", isOn: $model.hollowShapes)
+                    .toggleStyle(.switch).controlSize(.small)
+                    .help("Draw open-ended walls around the footprint")
+                if model.hollowShapes {
+                    DimensionStepper(title: "Wall thickness", value: $model.shapeWallThickness,
+                                     range: 1...(Cell.gridSize / 2))
+                        .help("Wall thickness measured inward in voxels")
+                }
             } else if [.add, .paint, .erase].contains(model.tool) {
                 HStack {
                     Text("Brush size").font(.system(size: 12)).foregroundStyle(StudioStyle.secondary)

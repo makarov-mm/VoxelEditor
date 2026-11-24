@@ -27,35 +27,91 @@ final class CylinderTests: XCTestCase {
         }
     }
 
-    func testCurvedPreviewContainsExactlyTheExposedFacesOnAllSixNormals() throws {
-        let first = Cell(-5, 6, -8), last = first.offset(5, 3, 8)
+    func testCurvedAndHollowPreviewsContainExactlyTheExposedFacesOnAllSixNormals() throws {
+        let first = Cell(-5, 6, -8), last = first.offset(6, 6, 8)
         for normal in Cell.neighbors {
-            let shape = try XCTUnwrap(VoxelShape(tool: .cylinder, from: first, to: last, normal: normal))
-            var cells = Set<Cell>()
-            shape.forEachCell { cells.insert($0) }
-            XCTAssertEqual(shape.cellCount, cells.count)
-            let opposite = Cell(-normal.x, -normal.y, -normal.z)
-            let reverse = try XCTUnwrap(VoxelShape(tool: .cylinder, from: last, to: first, normal: opposite))
-            var reversed = Set<Cell>()
-            reverse.forEachCell { reversed.insert($0) }
-            XCTAssertEqual(cells, reversed)
-            var preview = Set<Face>()
-            shape.forEachCylinderFace { patch, direction in
-                for x in patch.min.x...patch.max.x {
-                    for y in patch.min.y...patch.max.y {
-                        for z in patch.min.z...patch.max.z {
-                            XCTAssertTrue(preview.insert(Face(cell: Cell(x, y, z), normal: direction)).inserted)
-                        }
+            for (tool, wall): (EditTool, Int) in [(.cylinder, 0), (.cylinder, 1), (.cylinder, 2), (.box, 1), (.box, 2)] {
+                let shape = try XCTUnwrap(VoxelShape(tool: tool, from: first, to: last, normal: normal,
+                                                     wallThickness: wall))
+                var cells = Set<Cell>()
+                shape.forEachCell { cells.insert($0) }
+                XCTAssertEqual(shape.cellCount, cells.count)
+                let opposite = Cell(-normal.x, -normal.y, -normal.z)
+                let reverse = try XCTUnwrap(VoxelShape(tool: tool, from: last, to: first, normal: opposite,
+                                                       wallThickness: wall))
+                var reversed = Set<Cell>()
+                reverse.forEachCell { reversed.insert($0) }
+                XCTAssertEqual(cells, reversed)
+                checkPreview(of: shape, against: cells)
+            }
+        }
+    }
+
+    private func checkPreview(of shape: VoxelShape, against cells: Set<Cell>) {
+        var preview = Set<Face>()
+        shape.forEachProfileFace { patch, direction in
+            for x in patch.min.x...patch.max.x {
+                for y in patch.min.y...patch.max.y {
+                    for z in patch.min.z...patch.max.z {
+                        XCTAssertTrue(preview.insert(Face(cell: Cell(x, y, z), normal: direction)).inserted)
                     }
                 }
             }
-            var expected = Set<Face>()
-            for cell in cells {
-                for direction in Cell.neighbors where !cells.contains(cell.offset(direction)) {
-                    expected.insert(Face(cell: cell, normal: direction))
+        }
+        var expected = Set<Face>()
+        for cell in cells {
+            for direction in Cell.neighbors where !cells.contains(cell.offset(direction)) {
+                expected.insert(Face(cell: cell, normal: direction))
+            }
+        }
+        XCTAssertEqual(preview, expected)
+    }
+
+    func testHollowFootprintsStayOpenAtBothEndsAndFillWhenTheOpeningIsTooSmall() throws {
+        let first = Cell(0, 0, 0)
+        for tool in [EditTool.cylinder, .box] {
+            for wall in [1, 2, 3] {
+                let last = Cell(4, 2, 4)
+                let shape = try XCTUnwrap(VoxelShape(tool: tool, from: first, to: last, wallThickness: wall))
+                var cells = Set<Cell>()
+                shape.forEachCell { cells.insert($0) }
+                for y in 0...2 {
+                    XCTAssertEqual(cells.contains(Cell(2, y, 2)), wall >= 3)
+                    XCTAssertEqual(cells.contains(Cell(2, y, 1)), wall >= 2)
+                    XCTAssertTrue(cells.contains(Cell(2, y, 0)))
+                    XCTAssertEqual(cells.contains(Cell(0, y, 0)), tool == .box)
                 }
             }
-            XCTAssertEqual(preview, expected)
+        }
+        let huge = Cell(127, 255, 127), corner = Cell(-128, 0, -128)
+        let thin = try XCTUnwrap(VoxelShape(tool: .box, from: corner, to: huge, wallThickness: 1))
+        XCTAssertEqual(thin.cellCount, (256 * 256 - 254 * 254) * 256)
+        XCTAssertTrue(thin.fitsOperationLimit)
+        let thick = try XCTUnwrap(VoxelShape(tool: .box, from: corner, to: huge, wallThickness: 2))
+        XCTAssertFalse(thick.fitsOperationLimit)
+    }
+
+    func testHollowDrawPreservesExistingVoxelsAndUndoesInOneStep() {
+        let model = EditorModel()
+        model.newProject()
+        let center = Cell(2, 0, 2), rim = Cell(2, 0, 0)
+        model.apply(hit: nil, adjacent: center)
+        model.apply(hit: nil, adjacent: rim)
+        let original = model.visibleCells
+        model.hollowShapes = true
+        model.ink = Ink(hex: "5D8F95")
+        for tool in [EditTool.box, .cylinder] {
+            XCTAssertTrue(model.addShape(tool: tool, from: Cell(0, 0, 0), to: Cell(4, 2, 4)))
+            XCTAssertEqual(model.visibleCells[center], original[center])
+            XCTAssertEqual(model.visibleCells[rim], original[rim])
+            XCTAssertNil(model.visibleCells[Cell(2, 2, 2)])
+            XCTAssertEqual(model.visibleCells[Cell(2, 2, 0)], model.ink)
+            let built = model.visibleCells
+            model.undo()
+            XCTAssertEqual(model.visibleCells, original)
+            model.redo()
+            XCTAssertEqual(model.visibleCells, built)
+            model.undo()
         }
     }
 

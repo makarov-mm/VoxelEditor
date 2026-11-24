@@ -292,6 +292,7 @@ private struct ModelingDrag {
     let face: Set<Cell>
     var end: Cell?
     var depth = -1
+    var wallThickness = 0
     var allowed = false
 }
 
@@ -758,20 +759,23 @@ final class StudioViewportSurface: NSView {
             camera.gestureReadout = "Extrude · \(depth) \(depth == 1 ? "voxel" : "voxels")" + blocked
         } else {
             let end = shapeEnd(for: drag, at: p)
-            guard drag.end != end else { return }
+            let wall = drag.tool.usesShapeDepth ? model.effectiveWallThickness : 0
+            guard drag.end != end || drag.wallThickness != wall else { return }
             drag.end = end
+            drag.wallThickness = wall
             let a = drag.anchor
             let bounds = BrushBox(a, end)
-            let shape = drag.tool == .cylinder
-                ? VoxelShape(cylinderIn: bounds, normal: drag.normal)
+            let previewProfile = drag.tool == .cylinder || (drag.tool == .box && wall > 0)
+            let shape = previewProfile
+                ? VoxelShape(profileFor: drag.tool, in: bounds, normal: drag.normal, wallThickness: wall)
                 : VoxelShape(tool: drag.tool, from: a, to: end)
             drag.allowed = end.inBounds && model.isEditableHeight(end.y) && shape?.fitsOperationLimit == true
             let tint = drag.allowed ? validMoveTint : invalidMoveTint
             if drag.tool == .line, let shape {
                 modelingFaces = shape.lineCells.flatMap { boxFaces(BrushBox(min: $0, max: $0), tint: tint) }
-            } else if drag.tool == .cylinder, let shape {
+            } else if previewProfile, let shape {
                 modelingFaces.removeAll(keepingCapacity: true)
-                shape.forEachCylinderFace { patch, normal in
+                shape.forEachProfileFace { patch, normal in
                     if let side = normalOffsets.firstIndex(of: SIMD3(normal.x, normal.y, normal.z)) {
                         modelingFaces.append(boxFace(patch, side: side, tint: tint))
                     }
