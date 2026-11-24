@@ -188,6 +188,7 @@ final class EditorModel: ObservableObject {
     @Published var mirrorZ = false
     @Published private(set) var selection: Set<Cell> = []
     @Published private(set) var pendingPaste: VoxelFragment?
+    @Published private(set) var stampName: String?
     @Published private(set) var pasteAnchor: Cell?
     @Published private(set) var pasteAllowed = false
     @Published var ink = Ink(hex: "E96555")
@@ -640,23 +641,27 @@ final class EditorModel: ObservableObject {
     }
 
     func undo() {
-        cancelPaste()
-        endStroke()
-        guard let entry = undoStack.popLast() else { return }
-        replay(entry.change, forward: false)
-        redoStack.append(entry)
-        currentState = entry.before
-        isDirty = currentState != savedState
+        keepingStamp {
+            cancelPaste()
+            endStroke()
+            guard let entry = undoStack.popLast() else { return }
+            replay(entry.change, forward: false)
+            redoStack.append(entry)
+            currentState = entry.before
+            isDirty = currentState != savedState
+        }
     }
 
     func redo() {
-        cancelPaste()
-        endStroke()
-        guard let entry = redoStack.popLast() else { return }
-        replay(entry.change, forward: true)
-        undoStack.append(entry)
-        currentState = entry.after
-        isDirty = currentState != savedState
+        keepingStamp {
+            cancelPaste()
+            endStroke()
+            guard let entry = redoStack.popLast() else { return }
+            replay(entry.change, forward: true)
+            undoStack.append(entry)
+            currentState = entry.after
+            isDirty = currentState != savedState
+        }
     }
 
     private func replay(_ change: Change, forward: Bool) {
@@ -1170,13 +1175,14 @@ extension EditorModel {
     }
 
     @discardableResult
-    func beginPaste(_ fragment: VoxelFragment) -> Bool {
+    func beginPaste(_ fragment: VoxelFragment, stampName: String? = nil) -> Bool {
         guard visibleActiveLayerIndex != nil else { return false }
         endStroke()
         cancelPaste()
         tool = .select
         pendingPaste = fragment
-        updatePasteAnchor(fragment.origin)
+        self.stampName = stampName
+        if stampName == nil { updatePasteAnchor(fragment.origin) }
         return true
     }
 
@@ -1201,8 +1207,23 @@ extension EditorModel {
     func cancelPaste() {
         guard pendingPaste != nil else { return }
         pendingPaste = nil
+        stampName = nil
         pasteAnchor = nil
         pasteAllowed = false
+    }
+
+    // A placement and undo/redo invalidate ordinary paste previews. A library stamp
+    // remains armed on the same editable layer, with its next position revalidated.
+    private func keepingStamp<Result>(_ action: () -> Result) -> Result {
+        let name = stampName, fragment = pendingPaste, anchor = pasteAnchor, layer = activeLayerID
+        let result = action()
+        if let name, let fragment, pendingPaste == nil, activeLayerID == layer,
+           visibleActiveLayerIndex != nil, tool == .select {
+            pendingPaste = fragment
+            stampName = name
+            updatePasteAnchor(anchor)
+        }
+        return result
     }
 
     @discardableResult
@@ -1214,7 +1235,9 @@ extension EditorModel {
         for (offset, ink) in fragment.cells {
             changes[anchor.offset(offset)] = Delta(before: nil, after: ink)
         }
-        cancelPaste()
-        return commit(changes, in: index, selecting: Set(changes.keys))
+        return keepingStamp {
+            cancelPaste()
+            return commit(changes, in: index, selecting: Set(changes.keys))
+        }
     }
 }

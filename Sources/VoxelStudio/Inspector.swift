@@ -116,7 +116,8 @@ struct Inspector: View {
 
     private func pasteControls(_ fragment: VoxelFragment) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Paste voxels", systemImage: "doc.on.clipboard")
+            Label(model.stampName.map { "Stamp · "+$0 } ?? "Paste voxels",
+                  systemImage: model.stampName == nil ? "doc.on.clipboard" : "square.grid.2x2")
                 .font(.system(size: 13, weight: .semibold)).foregroundStyle(StudioStyle.green)
             let count = fragment.cells.count
             Text("\(count.formatted()) \(count == 1 ? "voxel" : "voxels")")
@@ -133,7 +134,8 @@ struct Inspector: View {
             HStack(spacing: 7) {
                 Button("Place") { _ = model.commitPaste() }.disabled(!model.pasteAllowed)
                     .help("Place the voxels at the preview position (Return)")
-                Button("Cancel") { model.cancelPaste() }.help("Cancel placement (Esc)")
+                Button(model.stampName == nil ? "Cancel" : "Done") { model.cancelPaste() }
+                    .help("Finish placement (Esc)")
             }.controlSize(.small)
         }.padding(.horizontal, 18).padding(.vertical, 16)
     }

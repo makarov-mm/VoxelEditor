@@ -10,6 +10,7 @@ final class StudioUI: ObservableObject {
     }
 
     @Published var showingHelp = false
+    @Published var showingParts = false
     @Published var selectionNotice: String?
 
     func canPaste(into model: EditorModel) -> Bool {
@@ -103,6 +104,7 @@ struct StudioView: View {
             Rule()
             status
         }.foregroundStyle(StudioStyle.ink).background(StudioStyle.paper)
+            .sheet(isPresented: $ui.showingParts) { PartsLibraryView(model: model) }
             .onChange(of: model.projectID) { _ in camera.reset() }
             .onChange(of: model.ink) { _ in ui.selectionNotice = nil }
             .onChange(of: model.selection) { _ in ui.selectionNotice = nil }
@@ -125,6 +127,9 @@ struct StudioView: View {
                     .disabled(!model.canRedo)
             }
             Rule(vertical: true).frame(height: 19)
+            Button { ui.showingParts = true } label: {
+                Label("Parts", systemImage: "square.grid.2x2").padding(.horizontal, 6).frame(height: 30)
+            }.buttonStyle(StudioButtonStyle()).help("Open the parts library")
             Menu {
                 Button("New Project…") { model.newProject() }
                 Button("Open Project…") { model.openProject() }
@@ -260,6 +265,7 @@ struct StudioView: View {
     }
 
     private var pasteHint: String {
+        if model.stampName != nil { return "Click to stamp a copy · Esc finishes" }
         guard model.pasteAnchor != nil else { return "Move the pointer to a face or the grid · Esc cancels" }
         return model.pasteAllowed ? "Click or press Return to place · Esc cancels"
             : "Position blocked · Move to empty space inside the editable grid"
@@ -269,7 +275,7 @@ struct StudioView: View {
         HStack(spacing: 8) {
             Circle().fill(StudioStyle.green).frame(width: 5, height: 5)
             if model.pendingPaste != nil {
-                Text("Paste").fontWeight(.medium)
+                Text(model.stampName == nil ? "Paste" : "Stamp").fontWeight(.medium)
                 Text(pasteHint).lineLimit(1)
             } else if let notice = ui.selectionNotice {
                 Text(notice).lineLimit(1).help(notice)

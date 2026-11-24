@@ -220,6 +220,7 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         view.addItem(.separator())
         item(view, "Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", modifiers: [.command, .control])
         let windows = menu("Window")
+        item(windows, "Parts Library…", #selector(showParts), target: self)
         item(windows, "Minimize", #selector(NSWindow.performMiniaturize(_:)), "m")
         item(windows, "Zoom", #selector(NSWindow.performZoom(_:)))
         NSApp.windowsMenu = windows
@@ -300,6 +301,7 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     @objc private func grid() { model.showGrid.toggle() }
     @objc private func edges() { model.showEdges.toggle() }
     @objc private func fit() { camera.frameScene() }
+    @objc private func showParts() { ui.showingParts = true }
     @objc private func helpCard() { ui.showingHelp = true }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -310,6 +312,7 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         case #selector(redoEdit):
             if let text = NSApp.keyWindow?.firstResponder as? NSTextView { return text.undoManager?.canRedo ?? false }
             return model.canRedo
+        case #selector(showParts): return editingCanvas
         case #selector(paste(_:)):
             return editingCanvas && ui.canPaste(into: model)
         case #selector(selectAll(_:)), #selector(selectByColor):

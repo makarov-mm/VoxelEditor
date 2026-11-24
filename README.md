@@ -71,6 +71,14 @@ Choose a new swatch and click **Recolor Selection** to apply its RGB color. Each
 
 A fragment can contain up to two million voxels and preserves each voxel’s color and MagicaVoxel material. Once placed, the fragment is selected for moving or rotating. Cut, Delete, and Paste each take one undo step. To transfer a detail to another layer at the same coordinates, cut it before switching layers.
 
+## Reuse a part
+
+1. Select the voxels of a window, tree, or other detail. Open **Parts** in the toolbar, enter a name, and click **Save Selection**.
+2. Open **Parts** in any project and click the part’s thumbnail. Point at the grid or a voxel face to preview the next copy.
+3. Click to place each copy on the active layer. Each placement takes one undo step. Press **Esc** or click **Done** to finish stamping.
+
+Parts are stored locally and retain their colors and materials. To remove a part from the library, use **Delete…** in its thumbnail’s context menu.
+
 ## Shapes, extrusion, and fill
 
 - **Line (L)** draws between two cells on the face or work plane where you start dragging.
