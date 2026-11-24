@@ -69,6 +69,39 @@ final class SceneExportTests: XCTestCase {
     }
 
     @MainActor
+    func testRotatedLinkedPartsExportTheSamePixelsAsUnstructuredVoxels() async throws {
+        let model = EditorModel()
+        model.newProject()
+        for (cell, color) in [(Cell(-2, 1, 3), "FF7035"), (Cell(-1, 1, 3), "14448C"), (Cell(-1, 2, 3), "EDF3CA")] {
+            model.ink = Ink(hex: color)
+            model.apply(hit: nil, adjacent: cell)
+        }
+        model.tool = .select
+        model.selectAllOnActiveLayer()
+        XCTAssertTrue(model.createObjectFromSelection(name: "Beacon"))
+        let original = try XCTUnwrap(model.activeSceneObject)
+        XCTAssertTrue(model.duplicateObject(original.id, linked: true))
+        let copyID = try XCTUnwrap(model.activeSceneObject?.id)
+        XCTAssertTrue(model.moveObject(copyID, by: Cell(4, 2, -2)))
+        let placement = try XCTUnwrap(model.activeSceneObject?.transform)
+        XCTAssertTrue(model.rotateObject(copyID, around: .y, pivot: placement.apply(Cell(0, 0, 0))))
+        let flat = EditorModel()
+        flat.newProject()
+        for (cell, ink) in model.viewportCells {
+            flat.ink = ink
+            flat.apply(hit: nil, adjacent: cell)
+        }
+        func pixels(_ model: EditorModel) throws -> Data {
+            let camera = OrbitCamera()
+            let viewport = StudioViewportSurface(model: model, camera: camera)
+            viewport.frame = CGRect(x: 0, y: 0, width: 260, height: 180)
+            camera.reset()
+            return try exportedPixels(camera, surface: viewport)
+        }
+        XCTAssertEqual(try pixels(model), try pixels(flat))
+    }
+
+    @MainActor
     func testPastePreviewIsExcludedFromPNGUntilPlacement() async throws {
         let model = EditorModel(), camera = OrbitCamera()
         model.newProject()

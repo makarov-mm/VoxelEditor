@@ -3,9 +3,6 @@ import MetalKit
 import SwiftUI
 import simd
 
-private typealias V3 = SIMD3<Float>
-private typealias V4 = SIMD4<Float>
-
 private enum GridVolume {
     static let low = V3(Float(Cell.horizontalRange.lowerBound), Float(Cell.verticalRange.lowerBound),
                         Float(Cell.horizontalRange.lowerBound))
@@ -110,113 +107,6 @@ private struct SceneProjection: Equatable {
     func planePoint(_ p: CGPoint) -> V3 {
         target + right * Float(p.x - size.width * 0.5) / scale
             + up * Float(p.y - size.height * 0.5) / scale
-    }
-}
-
-private struct VoxelFace {
-    var base: V4
-    var color: V4
-    var ao: V4
-    var extent = V4(repeating: 1)
-}
-
-private let normalOffsets = [SIMD3<Int>(1, 0, 0), SIMD3<Int>(-1, 0, 0),
-                             SIMD3<Int>(0, 1, 0), SIMD3<Int>(0, -1, 0),
-                             SIMD3<Int>(0, 0, 1), SIMD3<Int>(0, 0, -1)]
-private let corners = [SIMD2<Int>(0, 0), SIMD2<Int>(1, 0), SIMD2<Int>(1, 1), SIMD2<Int>(0, 1)]
-private let basisU = [SIMD3<Int>(0, 0, 1), SIMD3<Int>(0, 0, 1), SIMD3<Int>(1, 0, 0),
-                      SIMD3<Int>(1, 0, 0), SIMD3<Int>(1, 0, 0), SIMD3<Int>(1, 0, 0)]
-private let basisV = [SIMD3<Int>(0, 1, 0), SIMD3<Int>(0, 1, 0), SIMD3<Int>(0, 0, 1),
-                      SIMD3<Int>(0, 0, 1), SIMD3<Int>(0, 1, 0), SIMD3<Int>(0, 1, 0)]
-private let faceLight: [Float] = [0.79, 0.87, 1.04, 0.65, 0.96, 0.83]
-
-private func cell(_ p: SIMD3<Int>) -> Cell { Cell(p.x, p.y, p.z) }
-private func float3(_ p: SIMD3<Int>) -> V3 { V3(Float(p.x), Float(p.y), Float(p.z)) }
-private func origin(_ f: VoxelFace) -> V3 { V3(f.base.x, f.base.y, f.base.z) }
-
-private func vertices(_ face: VoxelFace) -> [V3] {
-    let side = Int(face.base.w)
-    let extent = V3(face.extent.x, face.extent.y, face.extent.z)
-    let start = origin(face) + (side % 2 == 0 ? float3(normalOffsets[side]) * extent : .zero)
-    let u = float3(basisU[side]) * extent, v = float3(basisV[side]) * extent
-    return [start, start + u, start + u + v, start + v]
-}
-
-private struct SceneGeometry {
-    var faces: [VoxelFace] = []
-    var centers: [V3] = []
-    var shadow = [UInt8]()
-    let shadowSize: Int
-    let shadowOrigin: SIMD2<Float>
-    let shadowSpan: Float
-
-    init(_ voxels: [Cell: Ink]) {
-        // Keep the shadow texture around the projected geometry even for off-center models.
-        var lo = SIMD2<Float>(repeating: .infinity), hi = SIMD2<Float>(repeating: -.infinity)
-        for c in voxels.keys {
-            let center = SIMD2(Float(c.x) + Float(c.y) * 0.31, Float(c.z) - Float(c.y) * 0.19)
-            lo = simd_min(lo, center)
-            hi = simd_max(hi, center + 1)
-        }
-        if voxels.isEmpty { (lo, hi) = (.zero, .zero) }
-        shadowSpan = max(8, max(hi.x - lo.x, hi.y - lo.y) + 8)
-        shadowOrigin = (lo + hi - SIMD2(repeating: shadowSpan)) * 0.5
-        shadowSize = max(20, min(640, Int(ceil(shadowSpan * 2))))
-        let side = shadowSize
-        var shadowField = [Float](repeating: 0, count: side * side)
-        let resolution = Float(side) / shadowSpan
-        centers.reserveCapacity(min(65_536, voxels.count))
-        faces.reserveCapacity(min(131_072, voxels.count * 2))
-        for (c, ink) in voxels {
-            let xyz = SIMD3(c.x, c.y, c.z)
-            let p = float3(xyz)
-            let firstFace = faces.count
-            let rgb = V4(ink.r, ink.g, ink.b, 1)
-            for faceID in 0..<6 {
-                let n = xyz &+ normalOffsets[faceID]
-                guard voxels[cell(n)] == nil else { continue }
-                var ao = V4(repeating: 1)
-                for j in 0..<4 {
-                    let u = basisU[faceID] &* (corners[j].x * 2 - 1)
-                    let v = basisV[faceID] &* (corners[j].y * 2 - 1)
-                    let a = voxels[cell(n &+ u)] != nil, b = voxels[cell(n &+ v)] != nil
-                    let d = voxels[cell(n &+ u &+ v)] != nil
-                    let level = a && b ? 3 : (a ? 1 : 0) + (b ? 1 : 0) + (d ? 1 : 0)
-                    ao[j] = 1 - Float(level) * 0.045
-                }
-                faces.append(VoxelFace(base: V4(p, Float(faceID)), color: rgb, ao: ao))
-            }
-            guard faces.count > firstFace else { continue }
-            centers.append(p + 0.5)
-            // Project each cell onto the ground in the opposite direction to the key light.
-            let sx = (p.x + p.y * 0.31 - shadowOrigin.x) * resolution
-            let sz = (p.z - p.y * 0.19 - shadowOrigin.y) * resolution
-            let value = max(0.4, 1 - p.y * 0.012)
-            let x0 = max(0, min(side - 1, Int(floor(sx)))), x1 = max(x0, min(side - 1, Int(ceil(sx + resolution))))
-            let z0 = max(0, min(side - 1, Int(floor(sz)))), z1 = max(z0, min(side - 1, Int(ceil(sz + resolution))))
-            for z in z0...z1 {
-                for x in x0...x1 {
-                    let i = z * side + x
-                    shadowField[i] = max(shadowField[i], value)
-                }
-            }
-        }
-        let weights: [Float] = [1, 4, 6, 4, 1].map { $0 / 16 }
-        var horizontal = shadowField
-        for y in 0..<side {
-            for x in 2..<(side - 2) {
-                let i = y * side + x
-                horizontal[i] = (0..<5).reduce(0) { $0 + shadowField[i + $1 - 2] * weights[$1] }
-            }
-        }
-        shadow = [UInt8](repeating: 0, count: side * side)
-        for y in 2..<(side - 2) {
-            for x in 0..<side {
-                let i = y * side + x
-                let value = (0..<5).reduce(Float(0)) { $0 + horizontal[i + ($1 - 2) * side] * weights[$1] }
-                shadow[i] = UInt8(clamping: Int((value * 255).rounded()))
-            }
-        }
     }
 }
 
@@ -325,7 +215,8 @@ final class StudioViewportSurface: NSView {
     private var model: EditorModel
     private var camera: OrbitCamera
     private var voxels: [Cell: Ink] = [:]
-    private var scene = SceneGeometry([:])
+    private let meshCache = SceneMeshCache()
+    private var scene = RenderScene(draws: [])
     private var revision: Int?
     private var requestedFrame: Int?
     private var baseTarget = V3.zero
@@ -405,7 +296,10 @@ final class StudioViewportSurface: NSView {
     override func hitTest(_ p: NSPoint) -> NSView? { super.hitTest(p) == nil ? nil : self }
 
     func synchronize(model: EditorModel, camera: OrbitCamera) {
-        if gesture == .paint && self.model !== model { cancelPointerGesture() }
+        if self.model !== model {
+            if gesture == .paint { cancelPointerGesture() }
+            revision = nil
+        }
         self.model = model
         self.camera = camera
         if gesture == .paste && pressedFragment !== model.pendingPaste { cancelPasteGesture() }
@@ -431,9 +325,12 @@ final class StudioViewportSurface: NSView {
                 baseTarget.y += Float(workLevel - displayedWorkLevel)
             }
             displayedWorkLevel = workLevel
-            scene = SceneGeometry(voxels)
-            softwareShadow = nil
-            painter?.update(scene)
+            let next = meshCache.resolve(model, world: voxels)
+            if next !== scene {
+                scene = next
+                softwareShadow = nil
+                painter?.update(scene)
+            }
         }
         updateSelectionShell()
         if requestedFrame != camera.framing {
@@ -1006,10 +903,10 @@ final class StudioViewportSurface: NSView {
     }
 
     private func makeShadowImage() -> CGImage? {
-        let count = scene.shadowSize
+        let count = scene.ground.shadowSize
         var pixels = [UInt8]()
         pixels.reserveCapacity(count * count * 4)
-        for a in scene.shadow {
+        for a in scene.ground.shadow {
             pixels.append(contentsOf: [0, 0, 0, a / 6])
         }
         guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
@@ -1033,7 +930,7 @@ final class StudioViewportSurface: NSView {
         ctx.setFillColor(red: CGFloat(bg.x), green: CGFloat(bg.y), blue: CGFloat(bg.z), alpha: 1)
         ctx.fill(bounds)
         if let image = softwareShadow, projection.eye.y > 0.0001 {
-            let o = scene.shadowOrigin, end = o + scene.shadowSpan
+            let o = scene.ground.shadowOrigin, end = o + scene.ground.shadowSpan
             let p = projection.project(V3(o.x, 0, end.y))
             let u = projection.project(V3(end.x, 0, end.y))
             let v = projection.project(V3(o.x, 0, o.y))
@@ -1065,7 +962,7 @@ final class StudioViewportSurface: NSView {
             }
         }
         // Painter's order is exact for axis-aligned grid faces viewed orthographically.
-        var geometry = scene.faces
+        var geometry = scene.worldFaces()
         var invalidPreview = [VoxelFace]()
         if includeEditorOverlays {
             geometry.append(contentsOf: hoverFaces)
@@ -1146,8 +1043,7 @@ private final class MetalPainter: NSObject, MTKViewDelegate {
     private var selectedInstances: MTLBuffer?
     private var selectedCount = 0
     private let device: MTLDevice
-    private var instances: MTLBuffer?
-    private var count = 0
+    private var draws = [MeshDraw]()
     private var shadow: MTLTexture?
     private var shadowMap = V4.zero
 
@@ -1199,25 +1095,23 @@ private final class MetalPainter: NSObject, MTKViewDelegate {
         }
     }
 
-    func update(_ scene: SceneGeometry) {
-        count = scene.faces.count
-        if scene.faces.isEmpty {
-            instances = nil
-        } else {
-            instances = scene.faces.withUnsafeBytes {
-                guard let start = $0.baseAddress else { return nil }
-                return device.makeBuffer(bytes: start, length: $0.count, options: .storageModeShared)
+    func update(_ scene: RenderScene) {
+        draws = scene.draws
+        for draw in draws where draw.mesh.metalBuffer == nil {
+            draw.mesh.metalBuffer = draw.mesh.faces.withUnsafeBytes { bytes in
+                guard !bytes.isEmpty, let start = bytes.baseAddress else { return nil }
+                return device.makeBuffer(bytes: start, length: bytes.count, options: .storageModeShared)
             }
         }
-        let n = scene.shadowSize
-        shadowMap = V4(scene.shadowOrigin.x, scene.shadowOrigin.y, scene.shadowSpan, 0)
+        let n = scene.ground.shadowSize
+        shadowMap = V4(scene.ground.shadowOrigin.x, scene.ground.shadowOrigin.y, scene.ground.shadowSpan, 0)
         let desc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r8Unorm, width: n, height: n,
                                                             mipmapped: false)
         desc.usage = .shaderRead
         desc.storageMode = device.hasUnifiedMemory ? .shared : .managed
         // Older command buffers can keep reading the previous snapshot while editing.
         let texture = device.makeTexture(descriptor: desc)
-        scene.shadow.withUnsafeBytes { bytes in
+        scene.ground.shadow.withUnsafeBytes { bytes in
             guard let start = bytes.baseAddress else { return }
             texture?.replace(region: MTLRegionMake2D(0, 0, n, n), mipmapLevel: 0, withBytes: start, bytesPerRow: n)
         }
@@ -1248,10 +1142,15 @@ private final class MetalPainter: NSObject, MTKViewDelegate {
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         enc.setRenderPipelineState(modelPipeline)
         enc.setDepthStencilState(solidDepth)
-        if let instances, count > 0 {
-            enc.setVertexBuffer(instances, offset: 0, index: 0)
-            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: count)
+        for draw in draws {
+            guard let buffer = draw.mesh.metalBuffer else { continue }
+            var placement = draw.placement
+            enc.setVertexBytes(&placement, length: MemoryLayout<MeshPlacement>.stride, index: 2)
+            enc.setVertexBuffer(buffer, offset: 0, index: 0)
+            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: draw.mesh.faces.count)
         }
+        var identity = MeshPlacement.identity
+        enc.setVertexBytes(&identity, length: MemoryLayout<MeshPlacement>.stride, index: 2)
         let hover = surface.hoverFaces
         if !hover.isEmpty {
             enc.setDepthStencilState(hoverDepth)
@@ -1292,6 +1191,7 @@ private final class MetalPainter: NSObject, MTKViewDelegate {
     using namespace metal;
 
     struct Uniforms { float4 right, up, eye, target, flags, background, grid, hoverEdge, shadowMap, volume, overlayOffset, overlayTint; };
+    struct Placement { float4 x, y, z; uint4 sides0, sides1; };
     struct Face { float4 base, color, ao, extent; };
     struct VertexOut {
         float4 position [[position]];
@@ -1308,22 +1208,29 @@ private final class MetalPainter: NSObject, MTKViewDelegate {
     constant float2 uv4[] = {float2(0,0),float2(1,0),float2(1,1),float2(0,1)};
 
     vertex VertexOut face_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
-                                 const device Face *faces [[buffer(0)]], constant Uniforms &u [[buffer(1)]]) {
+                                 const device Face *faces [[buffer(0)]], constant Uniforms &u [[buffer(1)]],
+                                 constant Placement &placement [[buffer(2)]]) {
         Face f = faces[iid];
-        uint side = uint(f.base.w);
+        uint localSide = uint(f.base.w);
+        uint mapping = localSide < 4 ? placement.sides0[localSide] : placement.sides1[localSide - 4];
+        uint side = mapping & 7u;
         uint corner = indices[vid];
         float2 uv = uv4[corner];
         float3 offset = side < 2 ? float3(0,uv.y,uv.x)
                       : side < 4 ? float3(uv.x,0,uv.y) : float3(uv,0);
         if (side % 2 == 0) offset += normals[side];
-        float3 world = f.base.xyz + offset * f.extent.xyz + u.overlayOffset.xyz;
+        float4 base = float4(f.base.xyz, 1.0);
+        float3 placed = float3(dot(placement.x,base),dot(placement.y,base),dot(placement.z,base));
+        // Model faces are unit squares. Extended overlays are already in world coordinates.
+        float3 world = placed + offset * f.extent.xyz + u.overlayOffset.xyz;
+        uint localCorner = (mapping >> (3u + 2u * corner)) & 3u;
         if (u.overlayTint.a > 0.0) f.color = u.overlayTint;
         float3 p = world - u.target.xyz;
         float depth = dot(world - float3(0,u.volume.z,0),u.eye.xyz)/u.volume.w;
         VertexOut out;
         out.position = float4(dot(p,u.right.xyz)/u.right.w, dot(p,u.up.xyz)/u.up.w,
                               0.5-depth-(f.color.a < 1.0 ? 0.00004 : 0.0), 1.0);
-        out.color = float4(saturate(f.color.rgb * lighting[side] * f.ao[corner]),f.color.a);
+        out.color = float4(saturate(f.color.rgb * lighting[side] * f.ao[localCorner]),f.color.a);
         out.uv = uv;
         out.facing = dot(normals[side],u.eye.xyz);
         out.selection = f.extent.w;
