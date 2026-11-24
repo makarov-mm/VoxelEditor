@@ -90,7 +90,9 @@ final class SceneMeshTests: XCTestCase {
             source(shape, key: key, at: VoxelTransform(axes: [1, 2, 3], offset: Cell(i % 3 * 19, 0, i / 3 * 19)),
                    index: i)
         }
-        let initial = cache.resolve(sources, world: MeshSource.composite(sources))
+        let initialCells = MeshSource.composite(sources)
+        let placedCellCount = initialCells.count
+        let initial = cache.resolve(sources, world: initialCells)
         XCTAssertEqual(cache.localBuildCount, 1)
         XCTAssertEqual(initial.draws.count, 9)
         XCTAssertTrue(initial.draws.allSatisfy { $0.mesh === initial.draws[0].mesh })
@@ -122,7 +124,7 @@ final class SceneMeshTests: XCTestCase {
         XCTAssertTrue(changed.draws.allSatisfy { $0.mesh === changed.draws[0].mesh })
         XCTAssertFalse(changed.draws[0].mesh === initial.draws[0].mesh)
         let cached = String(format: "%.1f", cachedMS.sorted()[1]), flat = String(format: "%.1f", fullMS.sorted()[1])
-        print("Scene mesh timing (\(shape.count * sources.count) placed cells, 9 instances): moved \(cached) ms, flat rebuild \(flat) ms")
+        print("Scene mesh timing (\(placedCellCount) placed cells, 9 instances): moved \(cached) ms, flat rebuild \(flat) ms")
     }
 
     func testMovingALanternAcrossTerrainRebuildsOnlyItsTwoChunks() {
