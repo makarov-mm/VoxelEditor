@@ -11,6 +11,9 @@ final class StudioUI: ObservableObject {
 
     @Published var showingHelp = false
     @Published var showingParts = false
+    @Published var showingScene = false
+    @Published var inspectedGroupID: UUID?
+    @Published var sceneNaming: SceneNameRequest?
     @Published var recoveryError: String?
     @Published var selectionNotice: String?
 
@@ -106,7 +109,17 @@ struct StudioView: View {
             status
         }.foregroundStyle(StudioStyle.ink).background(StudioStyle.paper)
             .sheet(isPresented: $ui.showingParts) { PartsLibraryView(model: model) }
-            .onChange(of: model.projectID) { _ in camera.reset() }
+            .sheet(item: $ui.sceneNaming) { request in
+                SceneNameSheet(request: request, model: model, ui: ui)
+            }
+            .onChange(of: model.projectID) { _ in
+                ui.inspectedGroupID = nil
+                ui.sceneNaming = nil
+                camera.reset()
+            }
+            .onChange(of: model.pendingPaste != nil) { placing in
+                if placing { ui.showingScene = false }
+            }
             .onChange(of: model.ink) { _ in ui.selectionNotice = nil }
             .onChange(of: model.selection) { _ in ui.selectionNotice = nil }
             .onChange(of: model.revision) { _ in ui.selectionNotice = nil }
@@ -266,6 +279,7 @@ struct StudioView: View {
     }
 
     private var pasteHint: String {
+        if model.isPlacingLinkedObject { return "Click to place a linked instance · Esc finishes" }
         if model.stampName != nil { return "Click to stamp a copy · Esc finishes" }
         guard model.pasteAnchor != nil else { return "Move the pointer to a face or the grid · Esc cancels" }
         return model.pasteAllowed ? "Click or press Return to place · Esc cancels"
@@ -276,7 +290,7 @@ struct StudioView: View {
         HStack(spacing: 8) {
             Circle().fill(StudioStyle.green).frame(width: 5, height: 5)
             if model.pendingPaste != nil {
-                Text(model.stampName == nil ? "Paste" : "Stamp").fontWeight(.medium)
+                Text(model.isPlacingLinkedObject ? "Linked Object" : model.stampName == nil ? "Paste" : "Stamp").fontWeight(.medium)
                 Text(pasteHint).lineLimit(1)
             } else if let notice = ui.selectionNotice {
                 Text(notice).lineLimit(1).help(notice)

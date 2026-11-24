@@ -256,6 +256,10 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             let title = "Rotate 90° Around \(axis.rawValue.uppercased())"
             item(edit, title, #selector(rotateSelection(_:)), target: self).representedObject = axis.rawValue
         }
+        let scene = menu("Scene")
+        item(scene, "Show Scene Inspector", #selector(showSceneInspector), target: self)
+        item(scene, "Create Object from Selection…", #selector(createSceneObject), target: self)
+        item(scene, "New Group…", #selector(newSceneGroup), target: self)
         let tools = menu("Tools")
         for tool in EditTool.allCases {
             item(tools, tool.label, #selector(chooseTool(_:)), tool.shortcut.lowercased(), modifiers: [],
@@ -353,6 +357,11 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     @objc private func grid() { model.showGrid.toggle() }
     @objc private func edges() { model.showEdges.toggle() }
     @objc private func fit() { camera.frameScene() }
+    @objc private func showSceneInspector() { ui.showingScene = true }
+    @objc private func createSceneObject() { ui.sceneNaming = SceneNameRequest(.createObject) }
+    @objc private func newSceneGroup() {
+        ui.sceneNaming = SceneNameRequest(.createGroup(ui.inspectedGroupID))
+    }
     @objc private func showParts() { ui.showingParts = true }
     @objc private func helpCard() { ui.showingHelp = true }
 
@@ -364,7 +373,10 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         case #selector(redoEdit):
             if let text = NSApp.keyWindow?.firstResponder as? NSTextView { return text.undoManager?.canRedo ?? false }
             return model.canRedo
-        case #selector(showParts): return editingCanvas
+        case #selector(showParts), #selector(showSceneInspector): return editingCanvas
+        case #selector(newSceneGroup): return editingCanvas && model.pendingPaste == nil
+        case #selector(createSceneObject):
+            return editingCanvas && model.pendingPaste == nil && !model.selection.isEmpty
         case #selector(paste(_:)):
             return editingCanvas && ui.canPaste(into: model)
         case #selector(selectAll(_:)), #selector(selectByColor):

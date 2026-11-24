@@ -5,6 +5,7 @@ struct PartsLibraryView: View {
     @StateObject private var library = PartsLibrary()
     @Environment(\.dismiss) private var dismiss
     @ViewState private var name = ""
+    @ViewState private var linked = false
     @ViewState private var removal: LibraryPart?
     @ViewState private var message: String?
 
@@ -29,6 +30,11 @@ struct PartsLibraryView: View {
                     Text("Select voxels in the editor to save your first part.")
                 }.foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+                Picker("Place as", selection: $linked) {
+                    Text("Voxel Stamp").tag(false)
+                    Text("Linked Object").tag(true)
+                }.pickerStyle(.segmented)
+                .help("Voxel stamps add independent cells. Linked objects share edits in this project.")
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 115), spacing: 12)], spacing: 10) {
                         ForEach(library.parts) { part in
@@ -45,8 +51,8 @@ struct PartsLibraryView: View {
                                     Text(part.name).font(.headline).lineLimit(1)
                                     Text("\(part.count.formatted()) voxels").font(.caption).foregroundStyle(.secondary)
                                 }.contentShape(Rectangle())
-                            }.buttonStyle(.plain).help("Stamp \(part.name)")
-                                .accessibilityLabel("Stamp \(part.name)")
+                            }.buttonStyle(.plain).help(linked ? "Place a linked instance of \(part.name)" : "Stamp \(part.name)")
+                                .accessibilityLabel(linked ? "Place linked object \(part.name)" : "Stamp \(part.name)")
                                 .contextMenu { Button("Delete…", role: .destructive) { removal = part } }
                         }
                     }.padding(2)
@@ -91,7 +97,10 @@ struct PartsLibraryView: View {
     private func stamp(_ part: LibraryPart) {
         do {
             let fragment = try library.fragment(for: part)
-            guard model.beginPaste(fragment, stampName: part.name) else {
+            let started = linked
+                ? model.beginLinkedStamp(fragment, partID: part.id, name: part.name)
+                : model.beginPaste(fragment, stampName: part.name)
+            guard started else {
                 message = "Choose a visible, unlocked layer for stamping."
                 return
             }

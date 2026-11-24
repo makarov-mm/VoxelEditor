@@ -18,31 +18,15 @@ struct Inspector: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 9) {
-                Image(systemName: "slider.horizontal.3").font(.system(size: 15, weight: .medium))
-                Text("Inspector").font(.system(size: 15, weight: .semibold))
-            }.foregroundStyle(StudioStyle.ink).padding(.horizontal, 18).frame(height: 48)
+            Picker("Inspector", selection: $ui.showingScene) {
+                Text("Edit").tag(false)
+                Text("Scene").tag(true)
+            }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, 14).frame(height: 48)
             Rule()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    if let fragment = model.pendingPaste {
-                        pasteControls(fragment)
-                    } else {
-                        brush
-                    }
-                    Rule()
-                    if model.tool == .select && model.pendingPaste == nil {
-                        colorSection
-                        Rule()
-                    }
-                    sliceSection
-                    Rule()
-                    if model.tool != .select && model.tool != .extrude {
-                        colorSection
-                        Rule()
-                    }
-                    layerSection
-                }
+            if ui.showingScene {
+                SceneInspector(model: model, ui: ui)
+            } else {
+                editInspector
             }
         }.background(StudioStyle.paper)
         .alert("Layer Name", isPresented: renaming) {
@@ -56,6 +40,46 @@ struct Inspector: View {
         .confirmationDialog("Delete “\(activeLayer?.name ?? "")”?", isPresented: $askingToDelete,
                             titleVisibility: .visible) {
             Button("Delete Layer", role: .destructive) { model.removeActiveLayer() }
+        }
+    }
+
+    private var editInspector: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if let object = model.activeSceneObject, model.pendingPaste == nil {
+                    Button {
+                        ui.inspectedGroupID = nil
+                        ui.showingScene = true
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: "cube")
+                            Text(object.name).lineLimit(1)
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.caption)
+                        }.frame(maxWidth: .infinity)
+                    }.buttonStyle(.plain).foregroundStyle(StudioStyle.green)
+                        .padding(.horizontal, 18).frame(height: 32)
+                        .help("Open the object in the scene inspector")
+                    Rule()
+                }
+                if let fragment = model.pendingPaste {
+                    pasteControls(fragment)
+                } else {
+                    brush
+                }
+                Rule()
+                if model.tool == .select && model.pendingPaste == nil {
+                    colorSection
+                    Rule()
+                }
+                sliceSection
+                Rule()
+                if model.tool != .select && model.tool != .extrude {
+                    colorSection
+                    Rule()
+                }
+                layerSection
+            }
         }
     }
 
@@ -116,8 +140,10 @@ struct Inspector: View {
 
     private func pasteControls(_ fragment: VoxelFragment) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(model.stampName.map { "Stamp · "+$0 } ?? "Paste voxels",
-                  systemImage: model.stampName == nil ? "doc.on.clipboard" : "square.grid.2x2")
+            let mode = model.isPlacingLinkedObject ? "Linked Object" : "Stamp"
+            let symbol = model.isPlacingLinkedObject ? "link" : "square.grid.2x2"
+            Label(model.stampName.map { mode + " · " + $0 } ?? "Paste voxels",
+                  systemImage: model.stampName == nil ? "doc.on.clipboard" : symbol)
                 .font(.system(size: 13, weight: .semibold)).foregroundStyle(StudioStyle.green)
             let count = fragment.cells.count
             Text("\(count.formatted()) \(count == 1 ? "voxel" : "voxels")")
@@ -335,6 +361,9 @@ private struct SelectionControls: View {
                 Label("Duplicate", systemImage: "plus.square.on.square")
             }.controlSize(.small).disabled(model.selection.isEmpty)
                 .help("Place a copy beside the selection (⌘D)")
+            Button("Create Object from Selection…") {
+                ui.sceneNaming = SceneNameRequest(.createObject)
+            }.controlSize(.small).disabled(model.selection.isEmpty)
             if let notice = ui.selectionNotice {
                 Text(notice).font(.caption).foregroundStyle(StudioStyle.secondary)
                     .fixedSize(horizontal: false, vertical: true)
