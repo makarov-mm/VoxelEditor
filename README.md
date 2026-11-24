@@ -1,6 +1,6 @@
 # Forma — voxel editor for macOS
 
-Forma is a native Swift and Metal editor for building, painting, and editing voxel models on a 256 × 256 × 256 grid. Organize a scene into layers, sample colors directly from a model, and exchange `.vox` files with MagicaVoxel. The canvas and inspector follow the Mac’s light or dark appearance.
+Forma is a native Swift and Metal editor for building, painting, and editing voxel models on a 256 × 256 × 256 grid. Organize layers into objects and groups, edit linked copies together, and exchange `.vox` files with MagicaVoxel. The canvas and inspector follow the Mac’s light or dark appearance.
 
 ![Northern Lighthouse in Forma, with a spruce ready to paste on the Vegetation layer](Media/Northern-Lighthouse.png)
 
@@ -71,13 +71,23 @@ Choose a new swatch and click **Recolor Selection** to apply its RGB color. Each
 
 A fragment can contain up to two million voxels and preserves each voxel’s color and MagicaVoxel material. Once placed, the fragment is selected for moving or rotating. Cut, Delete, and Paste each take one undo step. To transfer a detail to another layer at the same coordinates, cut it before switching layers.
 
+## Build a scene with objects
+
+1. Open **Cape Meridian**, choose the **Jetty and cutter** layer, and press **S**. Switch the camera to **Top** and drag a selection box around the boat, leaving the jetty outside the box.
+2. Choose **Scene → Create Object from Selection…** and enter a name. In the **Scene** inspector, use **Move** to step along one axis or enter a grid offset. Under **Rotate**, choose the object center or enter a pivot cell, then click **X**, **Y**, or **Z** for a quarter turn.
+3. Use **+ → New Group…** to create a group, and choose it in the object's **Parent** menu. Groups can contain objects and other groups. **Ungroup** moves the contents up one level.
+4. Choose **Duplicate → Linked Copy** to share the object's voxel geometry. Each copy has its own position and rotation. Choose a layer under **Object Layers** and click **Edit Voxels** to paint, select, or add shapes. The same edit appears at each linked placement. Adding an object layer gives each instance a corresponding layer.
+5. Use **Make Unique** before editing one copy independently, or choose **Duplicate → Independent Copy** when creating it. Extracting a new object from a linked placement also makes that placement independent, so its siblings keep their complete shape. Object creation, transforms, grouping, and unlinking all support Undo and Redo.
+
+Try the completed harbor scene. The stair and landing lanterns share a definition. Select **Stair lantern**, choose **Edit Voxels**, and paint its cap. The landing lantern changes with it. The green-capped pierhead lantern has its own definition. [Open Cape Meridian Harbor (VXL)](Media/Cape-Meridian-Harbor.vxl)
+
 ## Reuse a part
 
 1. Select the voxels of a window, tree, or other detail. Open **Parts** in the toolbar, enter a name, and click **Save Selection**.
-2. Open **Parts** in any project and click the part’s thumbnail. Point at the grid or a voxel face to preview the next copy.
-3. Click to place each copy on the active layer. Each placement takes one undo step. Press **Esc** or click **Done** to finish stamping.
+2. Open **Parts** in any project. Choose **Voxel Stamp** to add independent voxels to the active layer, or **Linked Object** to share edits between placements of this part in the project. Click the thumbnail and point at the grid or a voxel face to preview the placement.
+3. Click to place each copy. Each placement takes one undo step. Press **Esc** or click **Done** to finish stamping.
 
-Parts are stored locally and retain their colors and materials. To remove a part from the library, use **Delete…** in its thumbnail’s context menu.
+The parts library is local to your Mac. Each project embeds the geometry and materials of its linked objects, so you can reopen it on another Mac with an empty library. To remove a part from the library, use **Delete…** in its thumbnail’s context menu.
 
 ## Shapes, extrusion, and fill
 
@@ -107,16 +117,18 @@ Forma writes a local recovery draft in the background while a project has unsave
 
 | Format | Open | Save or export | Contents |
 | --- | --- | --- | --- |
-| Forma project (`.vxl`) | **File → Open…** | **Save** (`⌘S`) or **Save As…** | Editable layers, visibility, locks, voxels, and palette in versioned JSON |
-| MagicaVoxel (`.vox`) | **File → Open…** or **Import MagicaVoxel (.vox)…** | **File → Export MagicaVoxel (.vox)…** | Static models, placement, colors, and supported material metadata |
+| Forma project (`.vxl`) | **File → Open…** | **Save** (`⌘S`) or **Save As…** | Editable layers, nested groups, object transforms, shared definitions, visibility, locks, voxels, and palette |
+| MagicaVoxel (`.vox`) | **File → Open…** or **Import MagicaVoxel (.vox)…** | **File → Export MagicaVoxel (.vox)…** | Static scene hierarchy, shared model references, placement, rotations, colors, and supported material metadata |
 | Scene image (`.png`) | — | **File → Export Scene PNG…** (`⇧⌘P`) | Visible layers from the current camera, with the current appearance, floor grid, and edge settings. Editing overlays are omitted. |
 | Wavefront (`.obj` + `.mtl`) | — | **File → Export Wavefront OBJ…** | Mesh of the visible surface and its color materials. Keep the two files together. |
 
 PNG export renders at twice the viewport’s point dimensions, up to 4096 pixels on its longest side.
 
+Forma 2.0 opens earlier `.vxl` projects with their original layers. New saves and recovery drafts use schema version 2 and store each shared definition once.
+
 Opening a `.vox` creates an editable Forma project. Use **⌘S** to keep a native copy, or **Export MagicaVoxel (.vox)…** to take the edited model back to MagicaVoxel. VOX export includes hidden layers and preserves their visibility.
 
-Forma reads VOX versions 150 and 200 and writes version 150. A scene can span 256 cells on each axis, with up to 128 objects, two million voxels, and 255 occupied palette entries for VOX exchange. Animated scene nodes open at their earliest frame. Keep the original MagicaVoxel file for animation tracks, cameras, and render settings.
+Forma reads VOX versions 150 and 200 and writes version 150. A scene can span 256 cells on each axis, with up to 128 placed model layers, two million voxels, and 255 occupied palette entries for VOX exchange. Animated scene nodes open at their earliest frame. Keep the original MagicaVoxel file for animation tracks, cameras, and render settings.
 
 ## Development
 
