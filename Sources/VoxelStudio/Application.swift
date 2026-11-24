@@ -126,8 +126,7 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     }
 
     private func handleKey(_ event: NSEvent) -> Bool {
-        guard event.window === window, window?.attachedSheet == nil, NSApp.modalWindow == nil,
-              !(window?.firstResponder is NSTextView),
+        guard event.window === window, editingCanvas,
               event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else { return false }
         if model.pendingPaste != nil {
             switch event.keyCode {
@@ -141,7 +140,8 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             default: break
             }
         }
-        if model.tool == .select, model.pendingPaste != nil || !model.selection.isEmpty {
+        let voxelSelection = model.tool == .select && (model.pendingPaste != nil || !model.selection.isEmpty)
+        if ui.showingScene || voxelSelection {
             let delta: Cell?
             switch event.keyCode {
             case 123: delta = Cell(-1, 0, 0)
@@ -151,15 +151,19 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             case 116: delta = Cell(0, 1, 0)
             case 121: delta = Cell(0, -1, 0)
             case 51, 117:
-                _ = model.deleteSelection()
+                guard !ui.showingScene || ui.selectedObject(in: model) != nil else { return false }
+                deleteSelection()
                 return true
-            case 53 where !(window?.firstResponder is StudioViewportSurface):
+            case 53 where !ui.showingScene && !(window?.firstResponder is StudioViewportSurface):
                 model.clearSelection()
                 return true
             default: delta = nil
             }
             if let delta {
-                if let fragment = model.pendingPaste {
+                if ui.showingScene {
+                    guard ui.selectedObject(in: model) != nil else { return false }
+                    if camera.viewport?.hasObjectGesture != true { ui.nudge(delta, in: model) }
+                } else if let fragment = model.pendingPaste {
                     let anchor = model.pasteAnchor ?? fragment.origin
                     model.updatePasteAnchor(anchor.offset(delta))
                 } else {
@@ -170,23 +174,24 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         }
         // Physical positions stay accessible across keyboard layouts.
         switch event.keyCode {
-        case 1: model.tool = .select
-        case 9: model.tool = .add
-        case 11: model.tool = .paint
-        case 14: model.tool = .erase
-        case 34: model.tool = .pick
-        case 37: model.tool = .line
-        case 15: model.tool = .rectangle
-        case 31: model.tool = .box
-        case 8: model.tool = .cylinder
-        case 7: model.tool = .extrude
-        case 40: model.tool = .fill
+        case 1: ui.chooseTool(.select, in: model)
+        case 9: ui.chooseTool(.add, in: model)
+        case 11: ui.chooseTool(.paint, in: model)
+        case 14: ui.chooseTool(.erase, in: model)
+        case 34: ui.chooseTool(.pick, in: model)
+        case 37: ui.chooseTool(.line, in: model)
+        case 15: ui.chooseTool(.rectangle, in: model)
+        case 31: ui.chooseTool(.box, in: model)
+        case 8: ui.chooseTool(.cylinder, in: model)
+        case 7: ui.chooseTool(.extrude, in: model)
+        case 40: ui.chooseTool(.fill, in: model)
         case 16: model.sliceEnabled.toggle()
         case 43 where model.sliceEnabled: lowerSlice()
         case 47 where model.sliceEnabled: raiseSlice()
         case 5: model.showGrid.toggle()
         case 13: model.showEdges.toggle()
         case 3: camera.frameScene()
+        case 33 where ui.showingScene, 30 where ui.showingScene: return false
         case 33 where model.tool.usesShapeDepth: model.shapeDepth = max(1, model.shapeDepth - 1)
         case 30 where model.tool.usesShapeDepth: model.shapeDepth = min(Cell.gridSize, model.shapeDepth + 1)
         case 33: model.brushSize = max(1, model.brushSize - 1)
@@ -245,7 +250,7 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         item(edit, "Cut", #selector(NSText.cut(_:)), "x")
         item(edit, "Copy", #selector(NSText.copy(_:)), "c")
         item(edit, "Paste", #selector(NSText.paste(_:)), "v")
-        item(edit, "Delete Voxels", #selector(deleteVoxels), target: self)
+        item(edit, "Delete Voxels", #selector(deleteSelection), target: self)
         item(edit, "Select All", #selector(NSText.selectAll(_:)), "a")
         item(edit, "Select by Color", #selector(selectByColor), target: self)
         item(edit, "Deselect Voxels", #selector(deselectVoxels), target: self)
@@ -295,46 +300,53 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     @objc private func exportPng() { camera.exportPNG() }
     // AppKit routes these standard actions to text editors and system panels before the delegate.
     @objc func cut(_ sender: Any?) {
-        guard editingCanvas else { return }
+        guard editingVoxels else { return }
         ui.copySelection(model, cutting: true)
     }
 
     @objc func copy(_ sender: Any?) {
-        guard editingCanvas else { return }
+        guard editingVoxels else { return }
         ui.copySelection(model)
     }
 
     @objc func paste(_ sender: Any?) {
-        guard editingCanvas else { return }
+        guard editingVoxels else { return }
         ui.startPaste(in: model)
     }
 
-    @objc private func deleteVoxels() {
-        guard editingCanvas, model.pendingPaste == nil else { return }
-        _ = model.deleteSelection()
+    @objc private func deleteSelection() {
+        guard editingCanvas, model.pendingPaste == nil, camera.viewport?.hasObjectGesture != true else { return }
+        if ui.showingScene {
+            ui.removingObject = ui.selectedObject(in: model)
+        } else {
+            _ = model.deleteSelection()
+        }
     }
 
     @objc func selectAll(_ sender: Any?) {
-        guard editingCanvas, model.pendingPaste == nil else { return }
+        guard editingVoxels, model.pendingPaste == nil else { return }
         model.selectAllOnActiveLayer()
     }
-    @objc private func deselectVoxels() { model.clearSelection() }
+    @objc private func deselectVoxels() { if editingVoxels { model.clearSelection() } }
     @objc private func selectByColor() {
-        guard editingCanvas, model.pendingPaste == nil else { return }
+        guard editingVoxels, model.pendingPaste == nil else { return }
         ui.selectByColor(in: model)
     }
     @objc private func recolorSelection() {
-        guard editingCanvas, model.pendingPaste == nil, !model.selection.isEmpty else { return }
+        guard editingVoxels, model.pendingPaste == nil, !model.selection.isEmpty else { return }
         ui.recolorSelection(in: model)
     }
-    @objc private func duplicateSelection() { ui.duplicate(model) }
+    @objc private func duplicateSelection() {
+        guard editingCanvas, model.pendingPaste == nil, camera.viewport?.hasObjectGesture != true else { return }
+        ui.duplicate(model)
+    }
     @objc private func rotateSelection(_ sender: NSMenuItem) {
-        if let name = sender.representedObject as? String, let axis = VoxelAxis(rawValue: name) {
+        if editingVoxels, let name = sender.representedObject as? String, let axis = VoxelAxis(rawValue: name) {
             ui.rotate(axis, in: model)
         }
     }
     @objc private func chooseTool(_ sender: NSMenuItem) {
-        if let name = sender.representedObject as? String, let tool = EditTool(rawValue: name) { model.tool = tool }
+        if let name = sender.representedObject as? String, let tool = EditTool(rawValue: name) { ui.chooseTool(tool, in: model) }
     }
     @objc private func toggleSlice() { model.sliceEnabled.toggle() }
     @objc private func lowerSlice() { model.sliceLevel = max(Cell.verticalRange.lowerBound, model.sliceLevel - 1) }
@@ -342,8 +354,11 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
 
     private var editingCanvas: Bool {
         NSApp.keyWindow === window && window?.attachedSheet == nil && NSApp.modalWindow == nil &&
-            !(window?.firstResponder is NSTextView)
+            !(window?.firstResponder is NSTextView) && !ui.showingHelp && !ui.showingParts &&
+            ui.sceneNaming == nil && ui.removingObject == nil
     }
+
+    private var editingVoxels: Bool { editingCanvas && !ui.showingScene }
 
     @objc private func exportObj() { model.exportOBJ() }
     @objc private func undoEdit() {
@@ -378,16 +393,22 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         case #selector(newSceneGroup): return editingCanvas && model.pendingPaste == nil
         case #selector(createSceneObject):
             return editingCanvas && model.pendingPaste == nil && !model.selection.isEmpty
+        case #selector(duplicateSelection), #selector(deleteSelection):
+            let duplicating = menuItem.action == #selector(duplicateSelection)
+            menuItem.title = duplicating ? (ui.showingScene ? "Duplicate Object" : "Duplicate Selection")
+                                        : (ui.showingScene ? "Delete Object…" : "Delete Voxels")
+            guard editingCanvas, model.pendingPaste == nil, camera.viewport?.hasObjectGesture != true else { return false }
+            return ui.showingScene ? ui.selectedObject(in: model) != nil : !model.selection.isEmpty
         case #selector(paste(_:)):
-            return editingCanvas && ui.canPaste(into: model)
+            return editingVoxels && ui.canPaste(into: model)
         case #selector(selectAll(_:)), #selector(selectByColor):
-            return editingCanvas && model.pendingPaste == nil &&
+            return editingVoxels && model.pendingPaste == nil &&
                 model.editableActiveLayer?.cells.isEmpty == false
-        case #selector(cut(_:)), #selector(copy(_:)), #selector(deleteVoxels),
-             #selector(deselectVoxels), #selector(duplicateSelection), #selector(recolorSelection), #selector(rotateSelection(_:)):
-            return editingCanvas && model.pendingPaste == nil && !model.selection.isEmpty
+        case #selector(cut(_:)), #selector(copy(_:)), #selector(deselectVoxels),
+             #selector(recolorSelection), #selector(rotateSelection(_:)):
+            return editingVoxels && model.pendingPaste == nil && !model.selection.isEmpty
         case #selector(chooseTool(_:)):
-            menuItem.state = menuItem.representedObject as? String == model.tool.rawValue ? .on : .off
+            menuItem.state = editingVoxels && menuItem.representedObject as? String == model.tool.rawValue ? .on : .off
             return editingCanvas
         case #selector(toggleSlice):
             menuItem.state = model.sliceEnabled ? .on : .off

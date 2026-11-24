@@ -19,10 +19,11 @@ extension BrushBox {
         max = Cell(Swift.max(first.x, second.x), Swift.max(first.y, second.y), Swift.max(first.z, second.z))
     }
 
-    init?(enclosing cells: Set<Cell>) {
-        guard let first = cells.first else { return nil }
+    init?<S: Sequence>(enclosing cells: S) where S.Element == Cell {
+        var iterator = cells.makeIterator()
+        guard let first = iterator.next() else { return nil }
         self.init(first, first)
-        for cell in cells {
+        while let cell = iterator.next() {
             min = Cell(Swift.min(min.x, cell.x), Swift.min(min.y, cell.y), Swift.min(min.z, cell.z))
             max = Cell(Swift.max(max.x, cell.x), Swift.max(max.y, cell.y), Swift.max(max.z, cell.z))
         }

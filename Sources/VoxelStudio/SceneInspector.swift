@@ -137,11 +137,10 @@ struct SceneInspector: View {
     @ObservedObject var model: EditorModel
     @ObservedObject var ui: StudioUI
     @ViewState private var collapsed = Set<UUID>()
-    @ViewState private var removingObject: SceneObject?
     @ViewState private var notice: String?
 
     private var selectedGroup: SceneGroup? {
-        model.sceneLayout.groups.first { $0.id == ui.inspectedGroupID }
+        ui.selectedGroup(in: model)
     }
 
     private var selectedNode: SceneTreeRow.Node {
@@ -182,9 +181,9 @@ struct SceneInspector: View {
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
             }
         }.controlSize(.small)
-        .alert("Delete “\(removingObject?.name ?? "")”?", isPresented: Binding(
-            get: { removingObject != nil }, set: { if !$0 { removingObject = nil } }
-        ), presenting: removingObject) { object in
+        .alert("Delete “\(ui.removingObject?.name ?? "")”?", isPresented: Binding(
+            get: { ui.removingObject != nil }, set: { if !$0 { ui.removingObject = nil } }
+        ), presenting: ui.removingObject) { object in
             Button("Delete Object", role: .destructive) {
                 notice = model.removeObject(object.id) ? nil : "Unlock the object’s layers before deleting it."
             }
@@ -305,7 +304,7 @@ struct SceneInspector: View {
         Rule()
         objectLayers(object)
         Rule()
-        Button("Delete Object…", role: .destructive) { removingObject = object }
+        Button("Delete Object…", role: .destructive) { ui.removingObject = object }
     }
 
     private func duplicate(_ object: SceneObject, linked: Bool) {

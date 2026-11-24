@@ -14,8 +14,23 @@ final class StudioUI: ObservableObject {
     @Published var showingScene = false
     @Published var inspectedGroupID: UUID?
     @Published var sceneNaming: SceneNameRequest?
+    @Published var removingObject: SceneObject?
     @Published var recoveryError: String?
     @Published var selectionNotice: String?
+
+    func selectedGroup(in model: EditorModel) -> SceneGroup? {
+        model.sceneLayout.groups.first { $0.id == inspectedGroupID }
+    }
+
+    func selectedObject(in model: EditorModel) -> SceneObject? {
+        guard showingScene, selectedGroup(in: model) == nil else { return nil }
+        return model.activeSceneObject
+    }
+
+    func chooseTool(_ tool: EditTool, in model: EditorModel) {
+        showingScene = false
+        model.tool = tool
+    }
 
     func canPaste(into model: EditorModel) -> Bool {
         model.pendingPaste == nil && model.editableActiveLayer != nil &&
@@ -64,7 +79,12 @@ final class StudioUI: ObservableObject {
     }
 
     func duplicate(_ model: EditorModel) {
-        selectionNotice = model.duplicateSelection() ? nil : "There is no room for a copy beside this selection."
+        if showingScene {
+            guard let object = selectedObject(in: model) else { return }
+            selectionNotice = model.duplicateObject(object.id, linked: false) ? nil : "There is no room to duplicate this object."
+        } else {
+            selectionNotice = model.duplicateSelection() ? nil : "There is no room for a copy beside this selection."
+        }
     }
 
     func selectByColor(in model: EditorModel) {
@@ -82,8 +102,13 @@ final class StudioUI: ObservableObject {
     }
 
     func nudge(_ delta: Cell, in model: EditorModel) {
-        selectionNotice = model.moveSelection(by: delta)
-            ? nil : "Move blocked by an occupied voxel, the grid edge, or the slice limit."
+        if showingScene {
+            guard let object = selectedObject(in: model) else { return }
+            selectionNotice = model.moveObject(object.id, by: delta) ? nil : "Object move blocked. Check grid bounds, occupied cells and layer locks."
+        } else {
+            selectionNotice = model.moveSelection(by: delta)
+                ? nil : "Move blocked by an occupied voxel, the grid edge, or the slice limit."
+        }
     }
 }
 
@@ -115,11 +140,18 @@ struct StudioView: View {
             .onChange(of: model.projectID) { _ in
                 ui.inspectedGroupID = nil
                 ui.sceneNaming = nil
+                ui.removingObject = nil
                 camera.reset()
             }
             .onChange(of: model.pendingPaste != nil) { placing in
                 if placing { ui.showingScene = false }
             }
+            .onChange(of: ui.showingScene) { showingScene in
+                ui.selectionNotice = nil
+                if showingScene { model.cancelPaste() }
+            }
+            .onChange(of: ui.inspectedGroupID) { _ in ui.selectionNotice = nil }
+            .onChange(of: model.activeLayerID) { _ in ui.selectionNotice = nil }
             .onChange(of: model.ink) { _ in ui.selectionNotice = nil }
             .onChange(of: model.selection) { _ in ui.selectionNotice = nil }
             .onChange(of: model.revision) { _ in ui.selectionNotice = nil }
@@ -205,13 +237,17 @@ struct StudioView: View {
     private func toolButtons(_ tools: [EditTool], size: CGFloat) -> some View {
         ForEach(tools, id: \.self) { tool in
             IconControl(symbol: tool.symbol, hint: "\(tool.label) (\(tool.shortcut))", size: size, font: 17,
-                        selected: model.tool == tool) { model.tool = tool }
+                        selected: !ui.showingScene && model.tool == tool) { ui.chooseTool(tool, in: model) }
         }
     }
 
     private var workspace: some View {
         ZStack {
-            VoxelViewport(model: model, camera: camera)
+            VoxelViewport(model: model, camera: camera, objectMode: ui.showingScene,
+                          outlinesActiveObject: ui.selectedGroup(in: model) == nil) { _ in
+                ui.inspectedGroupID = nil
+                ui.selectionNotice = nil
+            }
             VStack(spacing: 0) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 6) {
@@ -292,17 +328,20 @@ struct StudioView: View {
             if model.pendingPaste != nil {
                 Text(model.isPlacingLinkedObject ? "Linked Object" : model.stampName == nil ? "Paste" : "Stamp").fontWeight(.medium)
                 Text(pasteHint).lineLimit(1)
-            } else if let notice = ui.selectionNotice {
-                Text(notice).lineLimit(1).help(notice)
             } else if let readout = camera.gestureReadout {
                 Text(readout).fontWeight(.medium).monospacedDigit().lineLimit(1)
+            } else if let notice = ui.selectionNotice {
+                Text(notice).lineLimit(1).help(notice)
+            } else if ui.showingScene {
+                Text("Scene").fontWeight(.medium)
+                Text("Click an object to select it · Drag along its face to move").lineLimit(1)
             } else {
                 Text(model.tool.label).fontWeight(.medium)
                 Text("·").foregroundStyle(StudioStyle.muted)
                 Text(model.tool.instruction).foregroundStyle(StudioStyle.muted).lineLimit(1)
             }
             Spacer()
-            if model.tool == .select && model.pendingPaste == nil {
+            if !ui.showingScene && model.tool == .select && model.pendingPaste == nil {
                 Text("\(model.selection.count.formatted()) selected").monospacedDigit()
                 Rule(vertical: true).frame(height: 12).padding(.horizontal, 3)
             }
@@ -334,7 +373,8 @@ private struct HelpCard: View {
             Text("Controls").font(.system(size: 17, weight: .semibold)).padding(.bottom, 12)
             ScrollView {
                 VStack(alignment: .leading, spacing: 9) {
-                    row("Draw", "Click or drag")
+                    row("Draw in Edit", "Click or drag")
+                    row("Pick or move in Scene", "Click or drag a face")
                     row("Orbit", "⌥ + drag or right-drag")
                     row("Pan", "⇧ + drag")
                     row("Zoom", "Scroll or pinch")
@@ -344,13 +384,13 @@ private struct HelpCard: View {
                     row("Brush size / shape depth", "[   ]")
                     row("Toggle selected voxel", "⌘ + click")
                     row("Add to selection", "⌘ + box drag")
-                    row("Nudge selection or paste X / Z", "← → / ↑ ↓")
-                    row("Nudge selection or paste Y", "Page Up / Down")
+                    row("Nudge on X / Z", "← → / ↑ ↓")
+                    row("Nudge on Y", "Page Up / Down")
                     row("Cut / copy / paste voxels", "⌘X / ⌘C / ⌘V")
                     row("Place pasted voxels", "Click or Return")
                     row("Cancel placement", "Esc")
                     row("Delete selection", "Delete")
-                    row("Duplicate selection", "⌘D")
+                    row("Duplicate selection or object", "⌘D")
                     row("Grid / edges", "G / W")
                     row("Slice view", "Y")
                     row("Lower / raise slice", ",   .")

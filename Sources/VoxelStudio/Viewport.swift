@@ -78,11 +78,18 @@ struct VoxelViewport: NSViewRepresentable {
     @ObservedObject var model: EditorModel
     @ObservedObject var camera: OrbitCamera
 
+    var objectMode = false
+    var outlinesActiveObject = true
+    var onScenePick: ((UUID) -> Void)?
+
     func makeNSView(context: Context) -> StudioViewportSurface {
         StudioViewportSurface(model: model, camera: camera)
     }
 
     func updateNSView(_ nsView: StudioViewportSurface, context: Context) {
+        nsView.onScenePick = onScenePick
+        nsView.outlinesActiveObject = outlinesActiveObject
+        nsView.objectMode = objectMode
         nsView.synchronize(model: model, camera: camera)
     }
 }
@@ -102,6 +109,15 @@ private struct SceneProjection: Equatable {
         let delta = p - target
         return CGPoint(x: size.width * 0.5 + CGFloat(simd_dot(delta, right) * scale),
                        y: size.height * 0.5 + CGFloat(simd_dot(delta, up) * scale))
+    }
+
+    func dragOffset(from start: CGPoint, to point: CGPoint, onFaceAxis axis: Int) -> Cell? {
+        guard abs(eye[axis]) > 0.00001 else { return nil }
+        let motion = planePoint(point) - planePoint(start)
+        // Intersect both pointer rays with the starting face plane.
+        var world = motion - eye * (motion[axis] / eye[axis])
+        world[axis] = 0
+        return Cell(Int(world.x.rounded()), Int(world.y.rounded()), Int(world.z.rounded()))
     }
 
     func planePoint(_ p: CGPoint) -> V3 {
@@ -207,6 +223,20 @@ private struct SelectionDrag {
     var moved = false
 }
 
+private struct ObjectDrag {
+    let start: CGPoint
+    let objectID, layerID, projectID: UUID
+    let revision, interactionRevision: Int
+    let faceAxis: Int
+    let projection: SceneProjection
+    let framing: Int
+}
+
+private struct ObjectOutlineKey: Equatable {
+    let objectID, projectID: UUID
+    let revision: Int
+}
+
 private let selectionTint = V4(0.12, 0.68, 0.91, 0.46)
 private let validMoveTint = V4(0.24, 0.91, 0.59, 0.53)
 private let invalidMoveTint = V4(1.00, 0.25, 0.20, 0.58)
@@ -233,6 +263,27 @@ final class StudioViewportSurface: NSView {
     private var modelingDrag: ModelingDrag?
     private var modelingFaces: [VoxelFace] = []
     private var selectionDrag: SelectionDrag?
+    private var objectDrag: ObjectDrag?
+    private var displayedOutline: ObjectOutlineKey?
+    var hasObjectGesture: Bool { objectDrag != nil }
+    var onScenePick: ((UUID) -> Void)?
+    var outlinesActiveObject = true {
+        didSet {
+            guard oldValue != outlinesActiveObject else { return }
+            if !outlinesActiveObject { cancelObjectDrag(duringViewUpdate: true) }
+            updateSelectionShell()
+            redraw()
+        }
+    }
+    var objectMode = false {
+        didSet {
+            guard oldValue != objectMode else { return }
+            cancelPointerGesture(duringViewUpdate: true)
+            updateSelectionShell()
+            window?.invalidateCursorRects(for: self)
+            redraw()
+        }
+    }
     private var pressedFragment: VoxelFragment?
     private var displayedFragment: VoxelFragment?
     private var displayedSelection = Set<Cell>()
@@ -251,7 +302,7 @@ final class StudioViewportSurface: NSView {
         guard hasMovePreview else { return nil }
         return (moveOffset, moveAllowed, moveTint)
     }
-    private enum Gesture { case paint, orbit, pan, select, modeling, paste }
+    private enum Gesture { case paint, orbit, pan, select, modeling, paste, object }
     var projectTitle: String { model.title }
     private var gesture: Gesture?
     override var acceptsFirstResponder: Bool { true }
@@ -297,7 +348,7 @@ final class StudioViewportSurface: NSView {
 
     func synchronize(model: EditorModel, camera: OrbitCamera) {
         if self.model !== model {
-            if gesture == .paint { cancelPointerGesture() }
+            cancelPointerGesture(duringViewUpdate: true)
             revision = nil
         }
         self.model = model
@@ -311,6 +362,9 @@ final class StudioViewportSurface: NSView {
                                   displayedSelection != model.selection ||
                                   requestedFrame != camera.framing || selectionDrag?.projection != projection) {
             cancelSelectionDrag()
+        }
+        if let drag = objectDrag, !isCurrent(drag) {
+            cancelObjectDrag(duringViewUpdate: true)
         }
         if let drag = modelingDrag,
            previewingPaste || drag.tool != model.tool || drag.layerID != model.activeLayerID ||
@@ -342,8 +396,11 @@ final class StudioViewportSurface: NSView {
 
     private func updateSelectionShell() {
         let fragment = model.pendingPaste
-        let cells = fragment == nil && model.tool == .select ? model.selection : []
-        guard fragment !== displayedFragment || cells != displayedSelection else { return }
+        let cells = !objectMode && fragment == nil && model.tool == .select ? model.selection : []
+        let object = objectMode && outlinesActiveObject && fragment == nil ? model.activeSceneObject : nil
+        let outline = object.map { ObjectOutlineKey(objectID: $0.id, projectID: model.projectID, revision: model.revision) }
+        guard outline != displayedOutline || fragment !== displayedFragment || cells != displayedSelection else { return }
+        displayedOutline = outline
         displayedFragment = fragment
         displayedSelection = cells
         selectionFaces.removeAll(keepingCapacity: false)
@@ -358,6 +415,13 @@ final class StudioViewportSurface: NSView {
         if let fragment {
             for (c, ink) in fragment.cells {
                 appendFaces(at: c, tint: V4(ink.r, ink.g, ink.b, 0.64)) { fragment.cells[$0] != nil }
+            }
+        } else if let object {
+            let shown = model.layers.contains { object.layerIDs.contains($0.id) && model.isLayerShownInEditor($0) && !$0.cells.isEmpty }
+            if shown, let bounds = model.objectBounds(object.id), !model.sliceEnabled || bounds.min.y <= model.sliceLevel {
+                let tint = V4(0.12, 0.63, 0.87, 0.055)
+                selectionFaces = boxFaces(bounds, tint: tint)
+                for i in selectionFaces.indices { selectionFaces[i].extent.w = 2 }
             }
         } else {
             for c in cells { appendFaces(at: c, tint: selectionTint, occupied: cells.contains) }
@@ -409,7 +473,7 @@ final class StudioViewportSurface: NSView {
     fileprivate var edgesEnabled: Bool { model.showEdges }
 
     fileprivate var hoverFaces: [VoxelFace] {
-        if previewingPaste { return [] }
+        if previewingPaste || objectMode { return [] }
         if gesture == .modeling { return modelingFaces }
         guard model.tool == .pick || model.editableActiveLayer != nil else { return [] }
         guard let point = hoverPoint, gesture != .orbit, gesture != .pan, gesture != .select else { return [] }
@@ -444,6 +508,9 @@ final class StudioViewportSurface: NSView {
     override func layout() {
         super.layout()
         metalView?.frame = bounds
+        if let drag = objectDrag, drag.projection.size != bounds.size {
+            cancelObjectDrag(duringViewUpdate: true)
+        }
         redraw()
     }
 
@@ -459,7 +526,7 @@ final class StudioViewportSurface: NSView {
 
     override func resetCursorRects() {
         super.resetCursorRects()
-        addCursorRect(bounds, cursor: .crosshair)
+        addCursorRect(bounds, cursor: objectMode && !previewingPaste ? .arrow : .crosshair)
     }
 
     private func point(_ e: NSEvent) -> CGPoint { convert(e.locationInWindow, from: nil) }
@@ -503,6 +570,8 @@ final class StudioViewportSurface: NSView {
             gesture = .paste
             positionPaste(at: point(e))
             redraw()
+        } else if objectMode {
+            beginObjectDrag(at: point(e))
         } else if model.tool == .select {
             let start = point(e)
             let pick = pick(at: start)
@@ -732,7 +801,7 @@ final class StudioViewportSurface: NSView {
         if duringViewUpdate {
             // SwiftUI may be synchronizing the representable in this call.
             DispatchQueue.main.async { [weak self] in
-                guard let self, self.modelingDrag == nil else { return }
+                guard let self, self.modelingDrag == nil, self.objectDrag == nil else { return }
                 self.camera.gestureReadout = nil
             }
         } else { camera.gestureReadout = nil }
@@ -744,13 +813,7 @@ final class StudioViewportSurface: NSView {
         drag.moved = true
         selectionDrag = drag
         if let axis = drag.moveAxis {
-            let proj = drag.projection
-            let screenDelta = proj.planePoint(p) - proj.planePoint(drag.start)
-            // Intersect both pointer rays with the starting face plane. Its normal coordinate stays fixed.
-            guard abs(proj.eye[axis]) > 0.00001 else { return }
-            var world = screenDelta - proj.eye * (screenDelta[axis] / proj.eye[axis])
-            world[axis] = 0
-            let delta = Cell(Int(world.x.rounded()), Int(world.y.rounded()), Int(world.z.rounded()))
+            guard let delta = drag.projection.dragOffset(from: drag.start, to: p, onFaceAxis: axis) else { return }
             if delta != moveOffset {
                 moveOffset = delta
                 moveAllowed = model.canMoveSelection(by: delta)
@@ -792,15 +855,88 @@ final class StudioViewportSurface: NSView {
         if gesture == .select { gesture = nil }
     }
 
+    private func beginObjectDrag(at point: CGPoint) {
+        guard bounds.intersection(visibleRect).contains(point) else { return }
+        let pick = pick(at: point)
+        guard let hit = pick.hit, let layer = model.sceneLayer(at: hit) else { return }
+        if model.activeLayerID != layer.id { model.activeLayerID = layer.id }
+        onScenePick?(layer.id)
+        guard objectMode, let object = model.activeSceneObject, model.activeLayerID == layer.id else {
+            synchronize(model: model, camera: camera)
+            return
+        }
+        let n = pick.normal
+        objectDrag = ObjectDrag(start: point, objectID: object.id, layerID: layer.id, projectID: model.projectID,
+                                revision: model.revision, interactionRevision: model.interactionRevision,
+                                faceAxis: n.x != 0 ? 0 : n.y != 0 ? 1 : 2,
+                                projection: projection, framing: camera.framing)
+        gesture = .object
+        synchronize(model: model, camera: camera)
+    }
+
+    private func isCurrent(_ drag: ObjectDrag) -> Bool {
+        objectMode && !previewingPaste && drag.projectID == model.projectID && drag.revision == model.revision &&
+            drag.layerID == model.activeLayerID && drag.interactionRevision == model.interactionRevision &&
+            drag.projection == projection && drag.framing == camera.framing
+    }
+
+    private func updateObjectDrag(at point: CGPoint) {
+        guard let drag = objectDrag else { return }
+        guard isCurrent(drag) else { cancelObjectDrag(); redraw(); return }
+        let offset: Cell
+        if hypot(point.x - drag.start.x, point.y - drag.start.y) < 3 {
+            offset = Cell(0, 0, 0)
+        } else {
+            guard let delta = drag.projection.dragOffset(from: drag.start, to: point, onFaceAxis: drag.faceAxis) else { return }
+            offset = delta
+        }
+        guard offset != moveOffset else { return }
+        moveOffset = offset
+        moveAllowed = hasMovePreview && model.canMoveObject(drag.objectID, by: offset)
+        if hasMovePreview {
+            let blocked = moveAllowed ? "" : " · Blocked"
+            camera.gestureReadout = "Move object · X \(offset.x)  Y \(offset.y)  Z \(offset.z)" + blocked
+        } else {
+            camera.gestureReadout = nil
+        }
+        redraw()
+    }
+
+    private func finishObjectDrag(at point: CGPoint) {
+        updateObjectDrag(at: point)
+        guard let drag = objectDrag else { return }
+        let offset = moveOffset, allowed = moveAllowed
+        cancelObjectDrag()
+        if allowed { _ = model.moveObject(drag.objectID, by: offset) }
+        synchronize(model: model, camera: camera)
+    }
+
+    private func cancelObjectDrag(duringViewUpdate: Bool = false) {
+        guard objectDrag != nil else { return }
+        objectDrag = nil
+        gesture = nil
+        moveOffset = Cell(0, 0, 0)
+        moveAllowed = false
+        if duringViewUpdate {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.objectDrag == nil, self.modelingDrag == nil else { return }
+                if self.camera.gestureReadout != nil { self.camera.gestureReadout = nil }
+            }
+        } else if camera.gestureReadout != nil {
+            camera.gestureReadout = nil
+        }
+    }
+
     private func cancelPasteGesture() {
         pressedFragment = nil
         if gesture == .paste { gesture = nil }
     }
 
-    private func cancelPointerGesture() {
+    private func cancelPointerGesture(duringViewUpdate: Bool = false) {
+        if gesture == .object { cancelObjectDrag(duringViewUpdate: duringViewUpdate) }
         if gesture == .paste { cancelPasteGesture() }
         if gesture == .select { cancelSelectionDrag() }
-        if gesture == .modeling { cancelModeling() }
+        if gesture == .modeling { cancelModeling(duringViewUpdate: duringViewUpdate) }
         if gesture == .paint {
             model.endStroke()
             strokeVoxels = nil
@@ -815,6 +951,8 @@ final class StudioViewportSurface: NSView {
             model.cancelPaste()
         } else if gesture == .modeling {
             cancelModeling()
+        } else if objectMode {
+            cancelObjectDrag()
         } else if gesture == .select {
             cancelSelectionDrag()
         } else if model.tool == .select {
@@ -827,7 +965,7 @@ final class StudioViewportSurface: NSView {
     }
 
     override func keyDown(with e: NSEvent) {
-        if e.keyCode == 53, previewingPaste || model.tool == .select || gesture == .modeling {
+        if e.keyCode == 53, objectMode || previewingPaste || model.tool == .select || gesture == .modeling {
             cancelOperation(self)
         } else {
             super.keyDown(with: e)
@@ -839,6 +977,7 @@ final class StudioViewportSurface: NSView {
             synchronize(model: model, camera: camera)
         }
         switch gesture {
+        case .object: updateObjectDrag(at: point(e))
         case .paint: applyStroke(at: point(e))
         case .select: updateSelectionDrag(at: point(e))
         case .paste:
@@ -878,6 +1017,9 @@ final class StudioViewportSurface: NSView {
             model.endStroke()
         }
         if gesture == .select { finishSelection(at: point(e)) }
+        if gesture == .object {
+            if e.type == .leftMouseUp { finishObjectDrag(at: point(e)) } else { cancelObjectDrag() }
+        }
         lastStrokePoint = nil
         strokeVoxels = nil
         gesture = nil

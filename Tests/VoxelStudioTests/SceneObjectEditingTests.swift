@@ -12,6 +12,51 @@ final class SceneObjectEditingTests: XCTestCase {
         return (model, try XCTUnwrap(model.activeSceneObject))
     }
 
+    func testObjectPreviewUsesAllMembersAndTheSameConstraintsAsTheCommit() throws {
+        let (model, object) = try newObject(at: Cell(125, 2, 3))
+        XCTAssertTrue(model.addObjectLayer(to: object.id))
+        model.tool = .add
+        model.apply(hit: nil, adjacent: Cell(127, 3, 3))
+        let second = model.activeLayerID
+        let box = BrushBox(Cell(125, 2, 3), Cell(127, 3, 3))
+        XCTAssertEqual(model.objectBounds(object.id), box)
+        model.toggleLayer(second)
+        let revision = model.revision
+        XCTAssertFalse(model.canMoveObject(object.id, by: Cell(1, 0, 0)))
+        XCTAssertFalse(model.moveObject(object.id, by: Cell(1, 0, 0)))
+        XCTAssertTrue(model.canMoveObject(object.id, by: Cell(-1, 0, 0)))
+        XCTAssertFalse(model.canMoveObject(object.id, by: Cell(Int.max, 0, 0)))
+        XCTAssertEqual(model.revision, revision)
+        model.toggleLayerLock(second)
+        XCTAssertFalse(model.canMoveObject(object.id, by: Cell(-1, 0, 0)))
+        model.toggleLayerLock(second)
+        XCTAssertTrue(model.moveObject(object.id, by: Cell(-1, 0, 0)))
+        XCTAssertEqual(model.objectBounds(object.id), BrushBox(Cell(124, 2, 3), Cell(126, 3, 3)))
+        model.undo()
+        XCTAssertEqual(model.objectBounds(object.id), box)
+    }
+
+    func testScenePickingFollowsLayerStackSliceAndSolo() throws {
+        let (model, object) = try newObject(at: Cell(5, 4, -5))
+        let hit = Cell(5, 4, -5), loose = model.layers[0].id, member = object.layerIDs[0]
+        model.toggleLayer(member)
+        model.activeLayerID = loose
+        model.tool = .add
+        model.apply(hit: nil, adjacent: hit)
+        XCTAssertEqual(model.sceneLayer(at: hit)?.id, loose)
+        model.toggleLayer(member)
+        model.toggleLayerLock(member)
+        XCTAssertEqual(model.sceneLayer(at: hit)?.id, member)
+        model.toggleIsolation(loose)
+        XCTAssertEqual(model.sceneLayer(at: hit)?.id, loose)
+        model.sliceLevel = 3
+        model.sliceEnabled = true
+        XCTAssertNil(model.sceneLayer(at: hit))
+        model.sliceLevel = 4
+        XCTAssertEqual(model.sceneLayer(at: hit)?.id, loose)
+        XCTAssertNil(model.sceneLayer(at: Cell(0, 0, 0)))
+    }
+
     func testSharedEditRejectsLockedCollidingAndOutOfBoundsPeersAtomically() throws {
         let (model, source) = try newObject(at: Cell(0, 0, 0))
         XCTAssertTrue(model.duplicateObject(source.id, linked: true))

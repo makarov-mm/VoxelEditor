@@ -237,6 +237,7 @@ final class EditorModel: ObservableObject {
     var isPlacingLinkedObject: Bool { linkedStampPartID != nil }
     @Published private(set) var layers: [VoxelLayer] {
         didSet {
+            cachedObjectBounds.removeAll(keepingCapacity: true)
             if !changingScene { synchronizeDefinitions(after: oldValue) }
             cancelPaste()
             merged = nil
@@ -247,6 +248,7 @@ final class EditorModel: ObservableObject {
     @Published var activeLayerID: UUID {
         didSet {
             if oldValue != activeLayerID {
+                interactionRevision &+= 1
                 endStroke()
                 clearSelection()
                 if isolatedLayerID != nil { isolatedLayerID = nil }
@@ -261,6 +263,7 @@ final class EditorModel: ObservableObject {
     @Published var tool: EditTool = .add {
         didSet {
             if oldValue != tool {
+                interactionRevision &+= 1
                 endStroke()
                 clearSelection()
             }
@@ -299,6 +302,8 @@ final class EditorModel: ObservableObject {
     @Published private(set) var revision = 0
     @Published private(set) var projectID = UUID()
 
+    private(set) var interactionRevision = 0
+    private var cachedObjectBounds: [UUID: BrushBox] = [:]
     private var merged: [Cell: Ink]?
     private var clipped: [Cell: Ink]?
     private var projectURL: URL?
@@ -1375,6 +1380,20 @@ extension EditorModel {
 extension EditorModel {
     var activeSceneObject: SceneObject? { sceneLayout.objects.first { $0.layerIDs.contains(activeLayerID) } }
 
+    func sceneLayer(at cell: Cell) -> VoxelLayer? {
+        guard cell.inBounds, isEditableHeight(cell.y) else { return nil }
+        return layers.last { isLayerShownInEditor($0) && $0.cells[cell] != nil }
+    }
+
+    func objectBounds(_ id: UUID) -> BrushBox? {
+        if let box = cachedObjectBounds[id] { return box }
+        guard let object = sceneLayout.objects.first(where: { $0.id == id }) else { return nil }
+        let cells = members(of: object).lazy.flatMap { $0.cells.keys }
+        let box = BrushBox(enclosing: cells)
+        cachedObjectBounds[id] = box
+        return box
+    }
+
     func geometryVersion(for layerID: UUID) -> UUID {
         layers.first { $0.id == layerID }?.geometryID ?? layerID
     }
@@ -1462,7 +1481,12 @@ extension EditorModel {
         if from == to { return cells }
         var result: [Cell: Ink] = [:]
         result.reserveCapacity(cells.count)
-        for (cell, ink) in cells { result[to.apply(from.unapply(cell))] = ink }
+        if from.axes == to.axes {
+            let delta = to.offset.offset(from.offset, by: -1)
+            for (cell, ink) in cells { result[cell.offset(delta)] = ink }
+        } else {
+            for (cell, ink) in cells { result[to.apply(from.unapply(cell))] = ink }
+        }
         return result
     }
 
@@ -1536,8 +1560,26 @@ extension EditorModel {
 
     private func canPlace(_ source: SceneObject, at transform: VoxelTransform, ignoring: Set<UUID>) -> Bool {
         guard transform.isValid else { return false }
-        let occupied = layers.filter { $0.isVisible && !ignoring.contains($0.id) }
-        for layer in members(of: source) {
+        let occupied = layers.filter { $0.isVisible && !$0.cells.isEmpty && !ignoring.contains($0.id) }
+        let moving = members(of: source)
+        if transform.axes == source.transform.axes {
+            let delta = transform.offset.offset(source.transform.offset, by: -1)
+            if let box = objectBounds(source.id), !(box.min.offset(delta).inBounds && box.max.offset(delta).inBounds) {
+                return false
+            }
+            // During a drag, query the smaller of each pair of sparse layers without copying their cells.
+            for layer in moving {
+                for other in occupied {
+                    if layer.cells.count <= other.cells.count {
+                        if layer.cells.keys.contains(where: { other.cells[$0.offset(delta)] != nil }) { return false }
+                    } else if other.cells.keys.contains(where: { layer.cells[$0.offset(delta, by: -1)] != nil }) {
+                        return false
+                    }
+                }
+            }
+            return true
+        }
+        for layer in moving {
             for cell in layer.cells.keys {
                 let destination = transform.apply(source.transform.unapply(cell))
                 guard destination.inBounds, !occupied.contains(where: { $0.cells[destination] != nil }) else { return false }
@@ -1546,11 +1588,17 @@ extension EditorModel {
         return true
     }
 
-    private func setTransform(_ id: UUID, by operation: VoxelTransform) -> Bool {
-        guard let i = sceneLayout.objects.firstIndex(where: { $0.id == id }) else { return false }
+    private func validatedTransform(_ id: UUID, by operation: VoxelTransform) -> (Int, VoxelTransform)? {
+        guard let i = sceneLayout.objects.firstIndex(where: { $0.id == id }) else { return nil }
         let object = sceneLayout.objects[i], transform = object.transform.followed(by: operation)
         guard transform != object.transform, !members(of: object).contains(where: { $0.isLocked }),
-              canPlace(object, at: transform, ignoring: Set(object.layerIDs)) else { return false }
+              canPlace(object, at: transform, ignoring: Set(object.layerIDs)) else { return nil }
+        return (i, transform)
+    }
+
+    private func setTransform(_ id: UUID, by operation: VoxelTransform) -> Bool {
+        guard let (i, transform) = validatedTransform(id, by: operation) else { return false }
+        let object = sceneLayout.objects[i]
         endStroke()
         let oldSelection = selection
         applyTransform(at: i, to: transform)
@@ -1572,6 +1620,11 @@ extension EditorModel {
             updated[i].cells = placed(updated[i].cells, from: object.transform, to: transform)
         }
         layers = updated
+    }
+
+    func canMoveObject(_ id: UUID, by delta: Cell) -> Bool {
+        guard delta.isSceneCoordinate else { return false }
+        return validatedTransform(id, by: VoxelTransform(axes: [1, 2, 3], offset: delta)) != nil
     }
 
     @discardableResult

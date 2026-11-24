@@ -81,6 +81,12 @@ A fragment can contain up to two million voxels and preserves each voxel’s col
 
 Try the completed harbor scene. The stair and landing lanterns share a definition. Select **Stair lantern**, choose **Edit Voxels**, and paint its cap. The landing lantern changes with it. The green-capped pierhead lantern has its own definition. [Open Cape Meridian Harbor (VXL)](Media/Cape-Meridian-Harbor.vxl)
 
+## Move objects in the viewport
+
+Open **Cape Meridian Harbor**, switch the inspector to **Scene**, and click the cutter. The scene tree selects the object and the viewport outlines its bounds. Grab its deck and drag to move it across the water. Grabbing a side face lets you move it vertically. The preview snaps to whole cells and turns red if the move is blocked. Release to commit, press **Esc** to cancel a drag, or use **⌘Z** to undo a completed move.
+
+Use the arrow keys for one-cell steps on X and Z, and **Page Up / Page Down** for Y. **⌘D** makes an independent copy of the selected object. To paint its voxels, click **Edit Voxels** or choose a brush. Each linked instance keeps its own position.
+
 ## Reuse a part
 
 1. Select the voxels of a window, tree, or other detail. Open **Parts** in the toolbar, enter a name, and click **Save Selection**.
@@ -124,7 +130,7 @@ Forma writes a local recovery draft in the background while a project has unsave
 
 PNG export renders at twice the viewport’s point dimensions, up to 4096 pixels on its longest side.
 
-Forma 2.0 opens earlier `.vxl` projects with their original layers. New saves and recovery drafts use schema version 2 and store each shared definition once.
+Forma opens earlier `.vxl` projects with their original layers. New saves and recovery drafts use schema version 2 and store each shared definition once.
 
 Opening a `.vox` creates an editable Forma project. Use **⌘S** to keep a native copy, or **Export MagicaVoxel (.vox)…** to take the edited model back to MagicaVoxel. VOX export includes hidden layers and preserves their visibility.
 

@@ -104,18 +104,10 @@ struct SceneTransformControls: View {
     }
 
     private func center() -> Cell {
-        let memberIDs = Set(object.layerIDs)
-        var low = Cell(Cell.horizontalRange.upperBound, Cell.verticalRange.upperBound, Cell.horizontalRange.upperBound)
-        var high = Cell(Cell.horizontalRange.lowerBound, Cell.verticalRange.lowerBound, Cell.horizontalRange.lowerBound)
-        var hasVoxels = false
-        for layer in model.layers where memberIDs.contains(layer.id) {
-            for cell in layer.cells.keys {
-                low = Cell(min(low.x, cell.x), min(low.y, cell.y), min(low.z, cell.z))
-                high = Cell(max(high.x, cell.x), max(high.y, cell.y), max(high.z, cell.z))
-                hasVoxels = true
-            }
+        guard let bounds = model.objectBounds(object.id) else {
+            return object.transform.offset.inBounds ? object.transform.offset : Cell(0, 0, 0)
         }
-        guard hasVoxels else { return object.transform.offset.inBounds ? object.transform.offset : Cell(0, 0, 0) }
-        return low.offset((high.x - low.x) / 2, (high.y - low.y) / 2, (high.z - low.z) / 2)
+        let span = bounds.size.offset(-1, -1, -1)
+        return bounds.min.offset(span.x / 2, span.y / 2, span.z / 2)
     }
 }

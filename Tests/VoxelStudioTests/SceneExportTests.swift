@@ -94,6 +94,7 @@ final class SceneExportTests: XCTestCase {
         func pixels(_ model: EditorModel) throws -> Data {
             let camera = OrbitCamera()
             let viewport = StudioViewportSurface(model: model, camera: camera)
+            viewport.objectMode = true  // The selected object's outline belongs only to the editor.
             viewport.frame = CGRect(x: 0, y: 0, width: 260, height: 180)
             camera.reset()
             return try exportedPixels(camera, surface: viewport)
