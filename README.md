@@ -53,6 +53,12 @@ Drag a selected voxel along the plane of the face you grabbed. For a one-voxel m
 
 To reuse a detail, select it and press **⌘D**. Forma places the copy next to the original and selects the copy so you can move it immediately. In the inspector, choose **X**, **Y**, or **Z** to turn the selection 90° around that axis. A completed duplication or rotation takes one undo step.
 
+## Select and recolor by color
+
+Press **S**, choose a swatch in the inspector, and click **Select by Color**. Forma selects every editable voxel on the active layer with that hex color, including disconnected parts. The current slice limits the selection. You can also sample a voxel with the eyedropper (**I**) and choose **Edit → Select by Color**.
+
+Choose a new swatch and click **Recolor Selection** to apply its RGB color. Each voxel keeps its material and opacity. The selection stays active, and **⌘Z** restores the original colors in one step. For example, in **Cape Meridian**, selecting `#BE523F` on the **Tower masonry** layer picks out 66 red voxels.
+
 ## Copy details between layers and projects
 
 1. Press **S** and select a detail on the active layer. **⌘C** copies it to the macOS clipboard. **⌘X** cuts it. **Delete** removes the selection and keeps the clipboard contents.

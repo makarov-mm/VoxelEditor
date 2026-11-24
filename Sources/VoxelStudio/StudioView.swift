@@ -62,6 +62,15 @@ final class StudioUI: ObservableObject {
         selectionNotice = model.duplicateSelection() ? nil : "There is no room for a copy beside this selection."
     }
 
+    func selectByColor(in model: EditorModel) {
+        selectionNotice = nil
+        model.selectByColor()
+    }
+
+    func recolorSelection(in model: EditorModel) {
+        selectionNotice = model.recolorSelection() ? nil : "The selected voxels already use the active color."
+    }
+
     func rotate(_ axis: VoxelAxis, in model: EditorModel) {
         selectionNotice = model.rotateSelection(around: axis)
             ? nil : "Rotation blocked by an occupied voxel, the grid edge, or the slice limit."
@@ -95,6 +104,7 @@ struct StudioView: View {
             status
         }.foregroundStyle(StudioStyle.ink).background(StudioStyle.paper)
             .onChange(of: model.projectID) { _ in camera.reset() }
+            .onChange(of: model.ink) { _ in ui.selectionNotice = nil }
             .onChange(of: model.selection) { _ in ui.selectionNotice = nil }
             .onChange(of: model.revision) { _ in ui.selectionNotice = nil }
             .tint(StudioStyle.green)
@@ -271,6 +281,10 @@ struct StudioView: View {
                 Text(model.tool.instruction).foregroundStyle(StudioStyle.muted).lineLimit(1)
             }
             Spacer()
+            if model.tool == .select && model.pendingPaste == nil {
+                Text("\(model.selection.count.formatted()) selected").monospacedDigit()
+                Rule(vertical: true).frame(height: 12).padding(.horizontal, 3)
+            }
             Image(systemName: "cube").font(.system(size: 10))
             Text("\(model.viewportCells.count.formatted()) voxels")
                 .monospacedDigit().help("Visible voxels")

@@ -40,12 +40,14 @@ struct Ink: Hashable, Codable {
         self.init(Float((rgb >> 16) & 255) / 255, Float((rgb >> 8) & 255) / 255, Float(rgb & 255) / 255)
     }
 
-    var hex: String {
-        func byte(_ value: Float) -> Int {
-            value.isFinite ? Int((min(1, max(0, value)) * 255).rounded()) : 0
+    var rgb24: UInt32 {
+        func byte(_ value: Float) -> UInt32 {
+            value.isFinite ? UInt32((min(1, max(0, value)) * 255).rounded()) : 0
         }
-        return String(format: "#%02X%02X%02X", byte(r), byte(g), byte(b))
+        return (byte(r) << 16) | (byte(g) << 8) | byte(b)
     }
+
+    var hex: String { String(format: "#%06X", rgb24) }
 
     var color: Color {
         Color(.sRGB, red: Double(r), green: Double(g), blue: Double(b))
@@ -422,11 +424,44 @@ final class EditorModel: ObservableObject {
             clearSelection()
             return
         }
-        var visible = Set(layers[index].cells.keys.filter { isEditableHeight($0.y) })
+        selectEditableCells(in: index) { _ in true }
+    }
+
+    @discardableResult
+    func selectByColor() -> Bool {
+        guard pendingPaste == nil, let index = visibleActiveLayerIndex else { return false }
+        tool = .select
+        let color = ink.rgb24
+        selectEditableCells(in: index) { $0.rgb24 == color }
+        return !selection.isEmpty
+    }
+
+    private func selectEditableCells(in index: Int, matching matches: (Ink) -> Bool) {
+        var visible = Set<Cell>()
+        for (cell, ink) in layers[index].cells where isEditableHeight(cell.y) && matches(ink) {
+            visible.insert(cell)
+        }
         for layer in layers.dropFirst(index + 1) where layer.isVisible {
+            if visible.isEmpty { break }
             visible.subtract(layer.cells.keys)
         }
         if visible != selection { selection = visible }
+    }
+
+    @discardableResult
+    func recolorSelection() -> Bool {
+        guard pendingPaste == nil, tool == .select, !selection.isEmpty,
+              let index = visibleActiveLayerIndex, ink.isValid else { return false }
+        let color = ink.rgb24
+        var changes: [Cell: Delta] = [:]
+        for cell in selection {
+            guard ownsVisibleCell(cell, in: index), let old = layers[index].cells[cell] else { return false }
+            if old.rgb24 == color { continue }
+            var replacement = ink
+            replacement.surface = old.surface
+            changes[cell] = Delta(before: old, after: replacement)
+        }
+        return commit(changes, in: index, selecting: selection)
     }
 
     private func pruneSelection() {

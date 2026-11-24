@@ -195,9 +195,11 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         item(edit, "Paste", #selector(NSText.paste(_:)), "v")
         item(edit, "Delete Voxels", #selector(deleteVoxels), target: self)
         item(edit, "Select All", #selector(NSText.selectAll(_:)), "a")
+        item(edit, "Select by Color", #selector(selectByColor), target: self)
         item(edit, "Deselect Voxels", #selector(deselectVoxels), target: self)
         edit.addItem(.separator())
         item(edit, "Duplicate Selection", #selector(duplicateSelection), "d", target: self)
+        item(edit, "Recolor Selection", #selector(recolorSelection), target: self)
         for axis in VoxelAxis.allCases {
             let title = "Rotate 90° Around \(axis.rawValue.uppercased())"
             item(edit, title, #selector(rotateSelection(_:)), target: self).representedObject = axis.rawValue
@@ -260,6 +262,14 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         model.selectAllOnActiveLayer()
     }
     @objc private func deselectVoxels() { model.clearSelection() }
+    @objc private func selectByColor() {
+        guard editingCanvas, model.pendingPaste == nil else { return }
+        ui.selectByColor(in: model)
+    }
+    @objc private func recolorSelection() {
+        guard editingCanvas, model.pendingPaste == nil, !model.selection.isEmpty else { return }
+        ui.recolorSelection(in: model)
+    }
     @objc private func duplicateSelection() { ui.duplicate(model) }
     @objc private func rotateSelection(_ sender: NSMenuItem) {
         if let name = sender.representedObject as? String, let axis = VoxelAxis(rawValue: name) {
@@ -302,11 +312,11 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             return model.canRedo
         case #selector(paste(_:)):
             return editingCanvas && ui.canPaste(into: model)
-        case #selector(selectAll(_:)):
+        case #selector(selectAll(_:)), #selector(selectByColor):
             return editingCanvas && model.pendingPaste == nil &&
                 model.layers.contains { $0.id == model.activeLayerID && $0.isVisible && !$0.cells.isEmpty }
         case #selector(cut(_:)), #selector(copy(_:)), #selector(deleteVoxels),
-             #selector(deselectVoxels), #selector(duplicateSelection), #selector(rotateSelection(_:)):
+             #selector(deselectVoxels), #selector(duplicateSelection), #selector(recolorSelection), #selector(rotateSelection(_:)):
             return editingCanvas && model.pendingPaste == nil && !model.selection.isEmpty
         case #selector(chooseTool(_:)):
             menuItem.state = menuItem.representedObject as? String == model.tool.rawValue ? .on : .off

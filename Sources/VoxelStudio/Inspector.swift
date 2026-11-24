@@ -31,6 +31,10 @@ struct Inspector: View {
                         brush
                     }
                     Rule()
+                    if model.tool == .select && model.pendingPaste == nil {
+                        colorSection
+                        Rule()
+                    }
                     sliceSection
                     Rule()
                     if model.tool != .select && model.tool != .extrude {
@@ -182,6 +186,12 @@ struct Inspector: View {
             } else {
                 swatches
             }
+            if model.tool == .select {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) { colorActions }.fixedSize()
+                    VStack(alignment: .leading, spacing: 6) { colorActions }
+                }.controlSize(.small)
+            }
         }.padding(.horizontal, 18).padding(.vertical, 16)
         .popover(isPresented: $editingColor, arrowEdge: .leading) {
             ColorEditor(initial: model.ink, color: $customColor) { ink in
@@ -190,6 +200,15 @@ struct Inspector: View {
                 editingColor = false
             }
         }
+    }
+
+    @ViewBuilder private var colorActions: some View {
+        Button("Select by Color") { ui.selectByColor(in: model) }
+            .disabled(activeLayer.map { !$0.isVisible || $0.cells.isEmpty } ?? true)
+            .help("Select editable voxels of the active color on this layer")
+        Button("Recolor Selection") { ui.recolorSelection(in: model) }
+            .disabled(model.selection.isEmpty)
+            .help("Apply the active color and keep each selected voxel’s material")
     }
 
     private var swatches: some View {
