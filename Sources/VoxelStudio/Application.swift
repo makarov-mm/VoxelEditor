@@ -78,7 +78,8 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             if let date = store.savedAt {
                 let alert = NSAlert()
                 alert.messageText = "Restore your last editing session?"
-                alert.informativeText = "Forma saved a recovery draft on " + date.formatted(date: .long, time: .standard)
+                let timestamp = date.formatted(Date.FormatStyle(date: .long, time: .standard).locale(Locale(identifier: "en")))
+                alert.informativeText = "Forma saved a recovery draft on " + timestamp
                     + ". Restore it as an unsaved project."
                 alert.addButton(withTitle: "Restore")
                 alert.addButton(withTitle: "Keep for Later").keyEquivalent = "\u{1b}"
