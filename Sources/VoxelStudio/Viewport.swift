@@ -608,6 +608,11 @@ final class StudioViewportSurface: NSView {
             let start = point(e)
             let pick = pick(at: start)
             let additive = e.modifierFlags.contains(.command)
+            if e.clickCount == 2, !additive, let hit = pick.hit {
+                model.selectConnected(at: hit)
+                synchronize(model: model, camera: camera)
+                return
+            }
             var moveAxis: Int?
             if !additive, let hit = pick.hit, let adjacent = pick.adjacent, model.selection.contains(hit) {
                 moveAxis = hit.x != adjacent.x ? 0 : hit.y != adjacent.y ? 1 : 2

@@ -92,7 +92,7 @@ extension EditTool {
         case .paint: return "Click a voxel to paint it"
         case .erase: return "Click to erase voxels on the active layer"
         case .pick: return "Click a voxel to sample its color"
-        case .select: return "Click or box-select voxels. Drag a selection to move it."
+        case .select: return "Double-click a connected part to select it. Drag a selection to move it."
         case .line: return "Drag on the grid or a voxel face to draw a line."
         case .rectangle: return "Drag opposite corners of a filled rectangle."
         case .box: return "Set the depth, then drag the base of the box."

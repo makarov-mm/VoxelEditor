@@ -427,6 +427,23 @@ final class EditorModel: ObservableObject {
         selectEditableCells(in: index) { _ in true }
     }
 
+    func selectConnected(at seed: Cell) {
+        guard pendingPaste == nil, tool == .select, let index = visibleActiveLayerIndex,
+              ownsVisibleCell(seed, in: index) else { return }
+        var connected: Set<Cell> = [seed]
+        var pending = [seed]
+        while let cell = pending.popLast() {
+            for direction in Cell.neighbors {
+                let next = cell.offset(direction)
+                if !connected.contains(next), ownsVisibleCell(next, in: index) {
+                    connected.insert(next)
+                    pending.append(next)
+                }
+            }
+        }
+        if selection != connected { selection = connected }
+    }
+
     @discardableResult
     func selectByColor() -> Bool {
         guard pendingPaste == nil, let index = visibleActiveLayerIndex else { return false }

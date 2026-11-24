@@ -49,6 +49,8 @@ With **Add**, **Paint**, or **Erase** active, turn on **Mirror X**, **Mirror Z**
 
 Press **S** and click a voxel on the active layer. Drag a box to select a region, including voxels behind the front row. **⌘-click** toggles individual voxels and **⌘-drag** adds a box to the selection. **⌘A** selects the editable voxels on the active layer.
 
+Double-click a voxel to select its whole connected part, including voxels of other colors. The selection follows shared faces on the active layer and stops at the current slice. Parts that touch only at an edge or corner stay separate.
+
 Drag a selected voxel along the plane of the face you grabbed. For a one-voxel move, use the **X**, **Y**, or **Z** controls in the inspector. The left and right arrows move along X, the up and down arrows move along Z, and **Page Up / Page Down** move along Y. A move is blocked if any voxel would leave the grid or collide with another visible voxel. **Esc** cancels a drag or clears an idle selection. **⌘Z** undoes a completed move.
 
 To reuse a detail, select it and press **⌘D**. Forma places the copy next to the original and selects the copy so you can move it immediately. In the inspector, choose **X**, **Y**, or **Z** to turn the selection 90° around that axis. A completed duplication or rotation takes one undo step.
