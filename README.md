@@ -85,7 +85,7 @@ Try the completed harbor scene. The stair and landing lanterns share a definitio
 
 Open **Cape Meridian Harbor**, switch the inspector to **Scene**, and click the cutter. The scene tree selects the object and the viewport outlines its bounds. Grab its deck and drag to move it across the water. Grabbing a side face lets you move it vertically. The preview snaps to whole cells and turns red if the move is blocked. Release to commit, press **Esc** to cancel a drag, or use **⌘Z** to undo a completed move.
 
-Use the arrow keys for one-cell steps on X and Z, and **Page Up / Page Down** for Y. **⌘D** makes an independent copy of the selected object. To paint its voxels, click **Edit Voxels** or choose a brush. Each linked instance keeps its own position.
+Use the arrow keys for one-cell steps on X and Z, and **Page Up / Page Down** for Y. **⌘D** makes an independent copy of the selected object. To paint its voxels, click **Edit Voxels** or choose a brush. Each linked instance keeps its own position. [Watch Needle Point Harbor being built from an empty grid (3:16, MP4)](Media/Needle-Point-Harbor.mp4) · [Open the finished scene (VXL)](Media/Needle-Point-Harbor.vxl)
 
 ## Reuse a part
 
