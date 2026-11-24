@@ -1502,9 +1502,9 @@ extension EditorModel {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, pendingPaste == nil, tool == .select, let index = visibleActiveLayerIndex,
               layers.count < Self.layerLimit, let box = BrushBox(enclosing: selection),
-              selection.allSatisfy({ ownsVisibleCell($0, in: index) }),
-              allowsLinkedEdit(in: index, additions: []) else { return false }
-        let group = activeSceneObject?.groupID
+              selection.allSatisfy({ ownsVisibleCell($0, in: index) }) else { return false }
+        let owner = activeSceneObject
+        let group = owner?.groupID
         let source = layers[index]
         let selected = selection
         let cells = Dictionary(uniqueKeysWithValues: selected.map { ($0, source.cells[$0]!) })
@@ -1512,12 +1512,17 @@ extension EditorModel {
         let object = SceneObject(name: name, groupID: group, layerIDs: [member.id],
                                  transform: VoxelTransform(axes: [1, 2, 3], offset: box.min))
         changeScene {
-            let old = layers
+            if let owner, let ownerIndex = sceneLayout.objects.firstIndex(where: { $0.id == owner.id }) {
+                // Extraction splits this placement, so the other instances retain their complete shape.
+                if canMakeObjectUnique(owner.id) {
+                    sceneLayout.objects[ownerIndex].definitionID = UUID()
+                    sceneLayout.objects[ownerIndex].libraryPartID = nil
+                }
+                definitionVersions[sceneLayout.objects[ownerIndex].definitionID] = UUID()
+            }
             var remainder = source.cells
             for cell in selected { remainder.removeValue(forKey: cell) }
-            markChangedCells(selected, in: index)
             layers[index].cells = remainder
-            synchronizeDefinitions(after: old)
             layers.insert(member, at: index + 1)
             sceneLayout.objects.append(object)
             activeLayerID = member.id

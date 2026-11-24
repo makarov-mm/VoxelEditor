@@ -41,6 +41,34 @@ final class SceneObjectEditingTests: XCTestCase {
         XCTAssertEqual(model.voxelCount, 5)
     }
 
+    func testExtractingFromLinkedObjectPreservesOtherPlacementsAndUndoRestoresLink() throws {
+        let model = EditorModel()
+        model.newProject()
+        let fragment = try XCTUnwrap(VoxelFragment(origin: Cell(0, 0, 0), cells: [
+            Cell(0, 0, 0): model.ink, Cell(0, 1, 0): model.ink
+        ]))
+        XCTAssertTrue(model.beginLinkedStamp(fragment, partID: UUID(), name: "Beacon"))
+        for base in [Cell(0, 0, 0), Cell(8, 0, 0)] {
+            model.updatePasteAnchor(base)
+            XCTAssertTrue(model.commitPaste())
+        }
+        model.cancelPaste()
+        let initial = model.sceneLayout
+        model.selectObject(initial.objects[0].id)
+        model.select([Cell(0, 1, 0)])
+        let visible = model.visibleCells
+        XCTAssertTrue(model.createObjectFromSelection(name: "Cap"))
+        XCTAssertEqual(model.visibleCells, visible)
+        XCTAssertEqual(model.sceneLayout.objects.count, 3)
+        XCTAssertEqual(model.sceneLayout.objects[1], initial.objects[1])
+        XCTAssertNotEqual(model.sceneLayout.objects[0].definitionID, initial.objects[0].definitionID)
+        model.undo()
+        XCTAssertEqual(model.sceneLayout, initial)
+        XCTAssertEqual(model.visibleCells, visible)
+        model.redo()
+        XCTAssertEqual(model.visibleCells, visible)
+    }
+
     func testMemberLayerChangesAcrossInstancesAndUndoOfLastPlacement() throws {
         let (model, first) = try newObject(at: Cell(4, 2, 0))
         XCTAssertTrue(model.duplicateObject(first.id, linked: true))
