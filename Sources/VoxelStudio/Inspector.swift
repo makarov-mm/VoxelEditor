@@ -74,7 +74,7 @@ struct Inspector: View {
             }.foregroundStyle(StudioStyle.green)
             if model.tool == .select {
                 SelectionControls(model: model, ui: ui)
-            } else if model.tool == .box {
+            } else if model.tool.usesShapeDepth {
                 DimensionStepper(title: "Depth", value: $model.shapeDepth, range: 1...Cell.gridSize)
                     .help("Thickness measured outward from the starting face ([ and ])")
             } else if [.add, .paint, .erase].contains(model.tool) {

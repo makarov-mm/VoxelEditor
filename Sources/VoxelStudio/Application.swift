@@ -126,6 +126,7 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         case 37: model.tool = .line
         case 15: model.tool = .rectangle
         case 31: model.tool = .box
+        case 8: model.tool = .cylinder
         case 7: model.tool = .extrude
         case 40: model.tool = .fill
         case 16: model.sliceEnabled.toggle()
@@ -133,9 +134,9 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         case 47 where model.sliceEnabled: raiseSlice()
         case 5: model.showGrid.toggle()
         case 13: model.showEdges.toggle()
-        case 3: camera.reset()
-        case 33 where model.tool == .box: model.shapeDepth = max(1, model.shapeDepth - 1)
-        case 30 where model.tool == .box: model.shapeDepth = min(Cell.gridSize, model.shapeDepth + 1)
+        case 3: camera.frameScene()
+        case 33 where model.tool.usesShapeDepth: model.shapeDepth = max(1, model.shapeDepth - 1)
+        case 30 where model.tool.usesShapeDepth: model.shapeDepth = min(Cell.gridSize, model.shapeDepth + 1)
         case 33: model.brushSize = max(1, model.brushSize - 1)
         case 30: model.brushSize = min(8, model.brushSize + 1)
         default: return false
@@ -288,7 +289,7 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     }
     @objc private func grid() { model.showGrid.toggle() }
     @objc private func edges() { model.showEdges.toggle() }
-    @objc private func fit() { camera.reset() }
+    @objc private func fit() { camera.frameScene() }
     @objc private func helpCard() { ui.showingHelp = true }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {

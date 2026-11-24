@@ -36,6 +36,8 @@ enum StudioStyle {
 }
 
 extension EditTool {
+    var usesShapeDepth: Bool { self == .box || self == .cylinder }
+
     var label: String {
         switch self {
         case .add: return "Add"
@@ -46,6 +48,7 @@ extension EditTool {
         case .line: return "Line"
         case .rectangle: return "Rectangle"
         case .box: return "Box"
+        case .cylinder: return "Cylinder"
         case .extrude: return "Extrude"
         case .fill: return "Fill"
         }
@@ -61,6 +64,7 @@ extension EditTool {
         case .line: return "line.diagonal"
         case .rectangle: return "rectangle"
         case .box: return "cube.fill"
+        case .cylinder: return "cylinder"
         case .extrude: return "arrow.up.and.line.horizontal.and.arrow.down"
         case .fill: return "drop.fill"
         }
@@ -76,6 +80,7 @@ extension EditTool {
         case .line: return "L"
         case .rectangle: return "R"
         case .box: return "O"
+        case .cylinder: return "C"
         case .extrude: return "X"
         case .fill: return "K"
         }
@@ -91,6 +96,7 @@ extension EditTool {
         case .line: return "Drag on the grid or a voxel face to draw a line."
         case .rectangle: return "Drag opposite corners of a filled rectangle."
         case .box: return "Set the depth, then drag the base of the box."
+        case .cylinder: return "Set the depth, then drag opposite corners of the cylinder’s base."
         case .extrude: return "Drag an exposed face outward to extend it."
         case .fill: return "Click to recolor connected voxels of the same color."
         }

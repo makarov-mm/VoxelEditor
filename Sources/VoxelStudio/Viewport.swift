@@ -49,6 +49,10 @@ final class OrbitCamera: ObservableObject {
         case "right": (yaw, pitch) = (.pi / 2, 0)
         default: (yaw, pitch) = (0.63, 0.48)
         }
+        frameScene()
+    }
+
+    func frameScene() {
         pan = .zero
         magnification = 1
         zoomPercent = 100
@@ -291,13 +295,15 @@ private struct ModelingDrag {
     var allowed = false
 }
 
-private func boxFaces(_ box: BrushBox, tint: V4) -> [VoxelFace] {
+private func boxFace(_ box: BrushBox, side: Int, tint: V4) -> VoxelFace {
     let c = box.min
-    let extent = V4(Float(box.max.x - c.x + 1), Float(box.max.y - c.y + 1), Float(box.max.z - c.z + 1), 0)
-    return (0..<6).map { side in
-        VoxelFace(base: V4(Float(c.x), Float(c.y), Float(c.z), Float(side)),
-                  color: tint, ao: V4(repeating: 1), extent: extent)
-    }
+    let size = box.size
+    return VoxelFace(base: V4(Float(c.x), Float(c.y), Float(c.z), Float(side)),
+                     color: tint, ao: V4(repeating: 1), extent: V4(Float(size.x), Float(size.y), Float(size.z), 0))
+}
+
+private func boxFaces(_ box: BrushBox, tint: V4) -> [VoxelFace] {
+    normalOffsets.indices.map { boxFace(box, side: $0, tint: tint) }
 }
 
 private struct SelectionDrag {
@@ -329,9 +335,6 @@ final class StudioViewportSurface: NSView {
     private var tracking: NSTrackingArea?
     private var hoverPoint: CGPoint?
     private var strokeVoxels: [Cell: Ink]?
-    private var strokeTool: EditTool?
-    private var strokeLayer: UUID?
-    private var strokeSlice: Int?
     private var displayedWorkLevel = 0
     private var lastStrokePoint: CGPoint?
     private let marquee = NSView()
@@ -401,11 +404,11 @@ final class StudioViewportSurface: NSView {
     override func hitTest(_ p: NSPoint) -> NSView? { super.hitTest(p) == nil ? nil : self }
 
     func synchronize(model: EditorModel, camera: OrbitCamera) {
+        if gesture == .paint && self.model !== model { cancelPointerGesture() }
         self.model = model
         self.camera = camera
         if gesture == .paste && pressedFragment !== model.pendingPaste { cancelPasteGesture() }
-        if gesture == .paint && (previewingPaste || strokeTool != model.tool || strokeLayer != model.activeLayerID ||
-                                 strokeSlice != (model.sliceEnabled ? model.sliceLevel : nil)) {
+        if gesture == .paint && (previewingPaste || !model.hasActiveStroke) {
             cancelPointerGesture()
         }
         if gesture == .select && (previewingPaste || model.tool != .select || revision != model.revision ||
@@ -517,7 +520,7 @@ final class StudioViewportSurface: NSView {
         case .add, .paint: color = V4(model.ink.r, model.ink.g, model.ink.b, 0.34)
         case .erase: color = V4(0.96, 0.28, 0.23, 0.36)
         case .pick: color = V4(0.95, 0.94, 0.85, 0.3)
-        case .line, .rectangle, .box:
+        case .line, .rectangle, .box, .cylinder:
             guard let first = pick.adjacent, first.inBounds, model.isEditableHeight(first.y) else { return [] }
             return boxFaces(BrushBox(min: first, max: first), tint: validMoveTint)
         case .fill, .extrude:
@@ -613,16 +616,14 @@ final class StudioViewportSurface: NSView {
                                           layerID: model.activeLayerID, moveAxis: moveAxis, projection: projection)
             gesture = .select
             redraw()
-        } else if [.line, .rectangle, .box, .extrude].contains(model.tool) {
+        } else if [.line, .rectangle, .box, .cylinder, .extrude].contains(model.tool) {
             beginModeling(at: point(e))
         } else if model.tool == .fill {
             if let hit = pick(at: point(e)).hit { _ = model.floodFill(at: hit) }
             synchronize(model: model, camera: camera)
         } else {
+            guard bounds.intersection(visibleRect).contains(point(e)) else { return }
             gesture = .paint
-            strokeTool = model.tool
-            strokeLayer = model.activeLayerID
-            strokeSlice = model.sliceEnabled ? model.sliceLevel : nil
             strokeVoxels = voxels
             model.beginStroke()
             applyStroke(at: point(e))
@@ -641,19 +642,51 @@ final class StudioViewportSurface: NSView {
         redraw()
     }
 
-    private func applyStroke(at p: CGPoint) {
-        let from = lastStrokePoint ?? p
-        let d = hypot(p.x - from.x, p.y - from.y)
-        let steps = min(256, max(1, Int(ceil(d / max(2, CGFloat(projection.scale) * 0.33)))))
-        for i in 1...steps {
-            let t = CGFloat(i) / CGFloat(steps)
-            let q = CGPoint(x: from.x + (p.x - from.x) * t, y: from.y + (p.y - from.y) * t)
-            let hit = pick(at: q, using: strokeVoxels)
+    private func applyStroke(at point: CGPoint) {
+        guard model.hasActiveStroke else {
+            cancelPointerGesture()
+            synchronize(model: model, camera: camera)
+            return
+        }
+        let previous = lastStrokePoint
+        lastStrokePoint = point
+        let canvas = bounds.intersection(visibleRect)
+        hoverPoint = canvas.contains(point) ? point : nil
+        guard previous != point,
+              let (start, end) = clippedStroke(from: previous ?? point, to: point, in: canvas) else {
+            redraw()
+            return
+        }
+        let distance = hypot(end.x - start.x, end.y - start.y)
+        let steps = Int(ceil(distance / max(2, CGFloat(projection.scale) * 0.33)))
+        let first = steps > 0 && previous.map(canvas.contains) == true ? 1 : 0
+        for index in first...steps {
+            let fraction = CGFloat(index) / CGFloat(max(1, steps))
+            let sample = CGPoint(x: start.x + (end.x - start.x) * fraction,
+                                 y: start.y + (end.y - start.y) * fraction)
+            let hit = pick(at: sample, using: strokeVoxels)
             model.apply(hit: hit.hit, adjacent: hit.adjacent)
         }
-        lastStrokePoint = p
-        hoverPoint = p
         synchronize(model: model, camera: camera)
+    }
+
+    // AppKit keeps delivering drags outside this view until the button is released.
+    private func clippedStroke(from start: CGPoint, to end: CGPoint, in rect: CGRect) -> (CGPoint, CGPoint)? {
+        guard !rect.isEmpty else { return nil }
+        if rect.contains(start) && rect.contains(end) { return (start, end) }
+        var enter: CGFloat = 0, exit: CGFloat = 1
+        func intersects(_ origin: CGFloat, _ delta: CGFloat, min lower: CGFloat, max upper: CGFloat) -> Bool {
+            if delta == 0 { return origin >= lower && origin <= upper }
+            let a = (lower - origin) / delta, b = (upper - origin) / delta
+            enter = max(enter, min(a, b))
+            exit = min(exit, max(a, b))
+            return enter <= exit
+        }
+        let dx = end.x - start.x, dy = end.y - start.y
+        guard intersects(start.x, dx, min: rect.minX, max: rect.maxX.nextDown),
+              intersects(start.y, dy, min: rect.minY, max: rect.maxY.nextDown) else { return nil }
+        func point(_ t: CGFloat) -> CGPoint { CGPoint(x: start.x + t * dx, y: start.y + t * dy) }
+        return (point(enter), point(exit))
     }
 
     private func beginModeling(at p: CGPoint) {
@@ -694,7 +727,7 @@ final class StudioViewportSurface: NSView {
         result.x = min(horizontal.upperBound, max(horizontal.lowerBound, result.x))
         result.z = min(horizontal.upperBound, max(horizontal.lowerBound, result.z))
         result.y = min(model.sliceEnabled ? model.sliceLevel : vertical.upperBound, max(vertical.lowerBound, result.y))
-        let thickness = drag.tool == .box ? min(Cell.gridSize, max(1, model.shapeDepth)) : 1
+        let thickness = drag.tool.usesShapeDepth ? min(Cell.gridSize, max(1, model.shapeDepth)) : 1
         result[axis] = anchor[axis] + normal[axis] * (thickness - 1)
         return cell(result)
     }
@@ -723,11 +756,20 @@ final class StudioViewportSurface: NSView {
             drag.end = end
             let a = drag.anchor
             let bounds = BrushBox(a, end)
-            let shape = VoxelShape(tool: drag.tool, from: a, to: end)
+            let shape = drag.tool == .cylinder
+                ? VoxelShape(cylinderIn: bounds, normal: drag.normal)
+                : VoxelShape(tool: drag.tool, from: a, to: end)
             drag.allowed = end.inBounds && model.isEditableHeight(end.y) && shape?.fitsOperationLimit == true
             let tint = drag.allowed ? validMoveTint : invalidMoveTint
             if drag.tool == .line, let shape {
                 modelingFaces = shape.lineCells.flatMap { boxFaces(BrushBox(min: $0, max: $0), tint: tint) }
+            } else if drag.tool == .cylinder, let shape {
+                modelingFaces.removeAll(keepingCapacity: true)
+                shape.forEachCylinderFace { patch, normal in
+                    if let side = normalOffsets.firstIndex(of: SIMD3(normal.x, normal.y, normal.z)) {
+                        modelingFaces.append(boxFace(patch, side: side, tint: tint))
+                    }
+                }
             } else {
                 modelingFaces = boxFaces(bounds, tint: tint)
             }
@@ -771,7 +813,7 @@ final class StudioViewportSurface: NSView {
         if drag.tool == .extrude {
             _ = model.extrude(drag.face, normal: drag.normal, depth: drag.depth)
         } else if let end = drag.end {
-            _ = model.addShape(tool: drag.tool, from: drag.anchor, to: end)
+            _ = model.addShape(tool: drag.tool, from: drag.anchor, to: end, normal: drag.normal)
         }
         synchronize(model: model, camera: camera)
     }
@@ -924,7 +966,10 @@ final class StudioViewportSurface: NSView {
             synchronize(model: model, camera: camera)
         }
         if gesture == .modeling { finishModeling(at: point(e)) }
-        if gesture == .paint { model.endStroke() }
+        if gesture == .paint {
+            if e.type == .leftMouseUp { applyStroke(at: point(e)) }
+            model.endStroke()
+        }
         if gesture == .select { finishSelection(at: point(e)) }
         lastStrokePoint = nil
         strokeVoxels = nil

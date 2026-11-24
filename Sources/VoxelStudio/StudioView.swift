@@ -154,7 +154,7 @@ struct StudioView: View {
                     VStack(spacing: compact ? 2 : 4) {
                         toolButtons([.add, .paint, .erase, .pick, .fill], size: size)
                         railDivider
-                        toolButtons([.line, .rectangle, .box, .extrude, .select], size: size)
+                        toolButtons([.line, .rectangle, .box, .cylinder, .extrude, .select], size: size)
                         railDivider
                         IconControl(symbol: "grid", hint: "Grid (G)", size: size, font: 16, selected: model.showGrid) {
                             model.showGrid.toggle()
@@ -224,7 +224,7 @@ struct StudioView: View {
                         IconControl(symbol: "plus", hint: "Zoom in", size: 28, font: 10) { camera.zoomIn() }
                         Rule(vertical: true).frame(height: 13).padding(.horizontal, 3)
                         IconControl(symbol: "viewfinder", hint: "Frame scene (F)", size: 28, font: 13) {
-                            camera.reset()
+                            camera.frameScene()
                         }
                     }.padding(2).modifier(FloatingSurface())
                 }
@@ -302,7 +302,7 @@ private struct HelpCard: View {
                     row("Frame scene", "F")
                     Rule()
                     ForEach(EditTool.allCases, id: \.self) { row($0.label, $0.shortcut) }
-                    row("Brush size / box depth", "[   ]")
+                    row("Brush size / shape depth", "[   ]")
                     row("Toggle selected voxel", "⌘ + click")
                     row("Add to selection", "⌘ + box drag")
                     row("Nudge selection or paste X / Z", "← → / ↑ ↓")

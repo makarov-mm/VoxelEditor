@@ -92,6 +92,25 @@ final class SceneExportTests: XCTestCase {
     }
 
     @MainActor
+    func testFramingPreservesTheChosenViewAndFitsTheGeometry() async throws {
+        let model = EditorModel(), camera = OrbitCamera()
+        model.newProject()
+        XCTAssertTrue(model.addShape(tool: .box, from: Cell(24, 0, 0), to: Cell(34, 2, 5)))
+        let surface = StudioViewportSurface(model: model, camera: camera)
+        surface.frame = CGRect(x: 0, y: 0, width: 180, height: 120)
+        for view in ["front", "right", "top"] {
+            camera.orient(view)
+            let framed = try exportedPixels(camera, surface: surface)
+            camera.zoomIn()
+            XCTAssertNotEqual(try exportedPixels(camera, surface: surface), framed)
+            camera.frameScene()
+            XCTAssertEqual(camera.viewKey, view)
+            XCTAssertEqual(camera.zoomPercent, 100)
+            XCTAssertEqual(try exportedPixels(camera, surface: surface), framed)
+        }
+    }
+
+    @MainActor
     func testEmptyViewportPreservesExistingDestination() async throws {
         let camera = OrbitCamera()
         let surface = StudioViewportSurface(model: EditorModel(), camera: camera)

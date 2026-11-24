@@ -57,7 +57,7 @@ struct Ink: Hashable, Codable {
 }
 
 enum EditTool: String, CaseIterable {
-    case add, paint, erase, pick, select, line, rectangle, box, extrude, fill
+    case add, paint, erase, pick, select, line, rectangle, box, cylinder, extrude, fill
 }
 
 enum SelectionMode {
@@ -273,6 +273,7 @@ final class EditorModel: ObservableObject {
     }
 
     var voxelCount: Int { visibleCells.count }
+    var hasActiveStroke: Bool { stroke != nil }
     var canUndo: Bool { !undoStack.isEmpty || stroke?.changes.isEmpty == false }
     var canRedo: Bool { !redoStack.isEmpty && stroke?.changes.isEmpty != false }
 
@@ -719,11 +720,31 @@ final class EditorModel: ObservableObject {
     }
 
     func loadProject(from url: URL) throws {
-        let data = try Data(contentsOf: url, options: .mappedIfSafe)
-        guard data.count <= 256 * 1024 * 1024 else { throw ProjectError.tooLarge }
-        let file = try JSONDecoder().decode(ProjectFile.self, from: data)
-        let newLayers = try file.validatedLayers()
-        guard shouldCloseProject() else { return }
+        try loadProject(from: url, confirmReplacement: shouldCloseProject)
+    }
+
+    func loadProject(from url: URL, confirmReplacement: () throws -> Bool) throws {
+        func read() throws -> (ProjectFile, [VoxelLayer]) {
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            guard data.count <= 256 * 1024 * 1024 else { throw ProjectError.tooLarge }
+            let file = try JSONDecoder().decode(ProjectFile.self, from: data)
+            return (file, try file.validatedLayers())
+        }
+
+        var (file, newLayers) = try read()
+        let previousSave = savedState
+        guard try confirmReplacement() else { return }
+        if previousSave != savedState, let savedURL = projectURL {
+            // Save As can replace the incoming file while the close dialog is open.
+            func fileID(_ url: URL) -> NSObjectProtocol? {
+                let resolved = URL(fileURLWithPath: url.path).resolvingSymlinksInPath()
+                return try? resolved.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier
+            }
+            let savedID = fileID(savedURL), incomingID = fileID(url)
+            if savedID == nil || incomingID == nil || savedID?.isEqual(incomingID) == true {
+                (file, newLayers) = try read()
+            }
+        }
         replaceLayers(newLayers, activeID: file.activeLayerID, title: file.title, palette: file.palette,
                       url: url, origin: file.voxOrigin)
     }
@@ -907,8 +928,9 @@ extension EditorModel {
     }
 
     @discardableResult
-    func addShape(tool: EditTool, from: Cell, to: Cell) -> Bool {
-        guard let index = visibleActiveLayerIndex, let shape = VoxelShape(tool: tool, from: from, to: to),
+    func addShape(tool: EditTool, from: Cell, to: Cell, normal: Cell = Cell(0, 1, 0)) -> Bool {
+        guard let index = visibleActiveLayerIndex,
+              let shape = VoxelShape(tool: tool, from: from, to: to, normal: normal),
               shape.fitsOperationLimit, isEditableHeight(shape.bounds.max.y) else { return false }
         let occupied = visibleCells
         var cells = Set<Cell>()

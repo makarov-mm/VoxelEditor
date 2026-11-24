@@ -28,14 +28,14 @@ The editor opens with **Northern Lighthouse**, a five-layer scene you can edit i
 | Action | Control |
 | --- | --- |
 | Add / paint / erase / sample color / select | `V` / `B` / `E` / `I` / `S` |
-| Line / rectangle / box | `L` / `R` / `O` |
+| Line / rectangle / box / cylinder | `L` / `R` / `O` / `C` |
 | Extrude / flood fill | `X` / `K` |
 | Toggle horizontal slice / lower or raise the cut | `Y` / `,` or `.` |
-| Decrease / increase brush size | `[` / `]` (1–8 voxels) |
+| Decrease / increase brush size or shape depth | `[` / `]` (brush 1–8, box or cylinder depth 1–256) |
 | Orbit | Right-drag or `⌥` + drag |
 | Pan | `⇧` + drag |
 | Zoom | Scroll or pinch |
-| Fit the scene in the viewport | `F` |
+| Fit the scene in the current view | `F` |
 | Toggle floor grid / voxel edges | `G` / `W` |
 | Undo / redo | `⌘Z` / `⇧⌘Z` |
 
@@ -66,6 +66,7 @@ A fragment can contain up to two million voxels and preserves each voxel’s col
 - **Line (L)** draws between two cells on the face or work plane where you start dragging.
 - **Rectangle (R)** fills the area between two opposite corners on that plane.
 - **Box (O)** uses the same drag for its footprint. Set the depth in the inspector before dragging to extend the box outward from the starting face. The live readout shows the dimensions before you release. Shapes add voxels in the active color and preserve existing voxels.
+- **Cylinder (C)** creates a filled disc or cylinder. Drag opposite corners of the base on the grid or on a voxel face. A square footprint gives a circle, and a wider footprint gives an ellipse. Set **Depth** to 1 for a disc or increase it to build a tower section. On a wall, depth extends outward from its face.
 - **Extrude (X)** pulls a connected patch of exposed faces outward. Drag in the direction of the face normal and release at the desired depth. When looking straight at the face, drag upward. Each column inherits the ink of its starting voxel. An occupied destination blocks the entire extrusion.
 - **Fill (K)** replaces a connected region on the active layer with the active ink. Voxels must share a face and match the starting ink, including its material. The fill stops at empty space, other inks, and layer boundaries.
 
