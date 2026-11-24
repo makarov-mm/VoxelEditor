@@ -360,7 +360,8 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     @objc private func showSceneInspector() { ui.showingScene = true }
     @objc private func createSceneObject() { ui.sceneNaming = SceneNameRequest(.createObject) }
     @objc private func newSceneGroup() {
-        ui.sceneNaming = SceneNameRequest(.createGroup(ui.inspectedGroupID))
+        let parent = model.sceneLayout.groups.first { $0.id == ui.inspectedGroupID }
+        ui.sceneNaming = SceneNameRequest(.createGroup(parent?.id))
     }
     @objc private func showParts() { ui.showingParts = true }
     @objc private func helpCard() { ui.showingHelp = true }
