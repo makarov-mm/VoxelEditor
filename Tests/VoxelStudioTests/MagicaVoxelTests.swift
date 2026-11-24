@@ -41,6 +41,7 @@ final class MagicaVoxelTests: XCTestCase {
         let model = geometry(256, 1, 256, [0, 0, 0, 2, 255, 0, 255, 255])
         let scene = try MagicaVoxel.decode(file(model))
         XCTAssertEqual(scene.palette.count, 255)
+        XCTAssertTrue(scene.layout.objects.isEmpty)
         XCTAssertEqual(scene.layers.first?.cells[Cell(-128, 0, -1)]?.hex, "#FFFFCC")
         XCTAssertEqual(scene.layers.first?.cells[Cell(127, 255, -1)]?.hex, "#111111")
     }
@@ -66,6 +67,14 @@ final class MagicaVoxelTests: XCTestCase {
         XCTAssertEqual(ink.hex, "#0B1621")
         XCTAssertEqual(ink.surface, VoxSurface(alpha: 144, properties: ["_type": "_glass", "_ior": "1.44"]))
         XCTAssertEqual(scene.layers[1].cells[Cell(6, 1, -4)], ink)
+        XCTAssertEqual(scene.layout.objects.count, 2)
+        let a = scene.layout.objects[0], b = scene.layout.objects[1]
+        XCTAssertEqual(a.definitionID, b.definitionID)
+        XCTAssertEqual(a.transform.unapply(Cell(11, 4, -7)), b.transform.unapply(Cell(6, 1, -4)))
+        let saved = try MagicaVoxel.encode(layers: scene.layers, palette: scene.palette, layout: scene.layout)
+        let reopened = try MagicaVoxel.decode(saved)
+        XCTAssertEqual(reopened.layout, scene.layout)
+        XCTAssertEqual(reopened.layers.map(\.cells), scene.layers.map(\.cells))
     }
 
     func testExportRetainsLayerOrderOverlapMaterialsAndEmptyLayers() throws {
@@ -85,6 +94,133 @@ final class MagicaVoxelTests: XCTestCase {
         XCTAssertEqual(scene.layers.map(\.name), original.map(\.name))
         XCTAssertEqual(scene.layers.map(\.isVisible), original.map(\.isVisible))
         XCTAssertTrue(scene.palette.contains(glass))
+        XCTAssertTrue(scene.layout.objects.isEmpty)
+        XCTAssertTrue(scene.layout.groups.isEmpty)
+    }
+
+    func testSharedMultiLayerObjectsAndGroupOrderSurviveNativeGraphExport() throws {
+        let ink = Ink(hex: "B85C42")
+        var glass = Ink(hex: "84BBC2")
+        glass.surface = VoxSurface(alpha: 90, properties: ["_type": "_glass"])
+        let local = Cell(2, 3, -1)
+        let poses = [VoxelTransform.identity, VoxelTransform(axes: [-3, 2, 1], offset: Cell(11, 2, 5))]
+        let lower = SceneGroup(name: "Lantern room")
+        let upper = SceneGroup(name: "Island")
+        var room = lower
+        room.parentID = upper.id
+        let definition = UUID(), partID = UUID()
+        var objects: [SceneObject] = []
+        var layers: [VoxelLayer] = []
+        for (index, pose) in poses.enumerated() {
+            let body = VoxelLayer(name: "Body", cells: [pose.apply(local): ink, pose.apply(local.offset(1, 0, 0)): ink])
+            let pane = VoxelLayer(name: "Pane", isVisible: index == 0, isLocked: true,
+                                  cells: [pose.apply(local.offset(0, 1, 0)): glass])
+            layers += [body, pane]
+            objects.append(SceneObject(name: "Lamp \(index + 1)", groupID: index == 0 ? upper.id : room.id,
+                                       definitionID: definition, layerIDs: [body.id, pane.id], transform: pose,
+                                       libraryPartID: partID))
+        }
+        let loose = VoxelLayer(name: "Loose", cells: [Cell(0, 0, 0): ink])
+        layers = [layers[3], loose, layers[0], layers[2], layers[1]]
+        let layout = SceneLayout(objects: objects, groups: [room, upper])
+        let bytes = try MagicaVoxel.encode(layers: layers, palette: [glass, ink], layout: layout)
+
+        // Inspect native chunks without relying on this codec's interpretation of Forma attributes.
+        func int(_ offset: Int) -> Int {
+            (0..<4).reduce(0) { $0 | (Int(bytes[offset + $1]) << (8 * $1)) }
+        }
+        var offset = 20, models = 0, referencedModels: [Int] = []
+        while offset < bytes.count {
+            let tag = String(decoding: bytes[offset..<offset + 4], as: UTF8.self)
+            let size = int(offset + 4)
+            if tag == "SIZE" { models += 1 }
+            if tag == "nSHP" {
+                // One model per shape. The last two ints are its model index and an empty frame dictionary.
+                referencedModels.append(int(offset + 12 + size - 8))
+            }
+            offset += 12 + size + int(offset + 8)
+        }
+        XCTAssertEqual(models, 3)
+        XCTAssertEqual(Dictionary(grouping: referencedModels, by: { $0 }).values.map(\.count).sorted(), [1, 2, 2])
+        let result = try MagicaVoxel.decode(bytes)
+        XCTAssertEqual(result.layout, layout)
+        XCTAssertEqual(result.layers.map(\.id), layers.map(\.id))
+        XCTAssertEqual(result.layers.map(\.cells), layers.map(\.cells))
+        XCTAssertEqual(result.layers.map(\.isLocked), layers.map(\.isLocked))
+        XCTAssertEqual(result.layers.map(\.isVisible), layers.map(\.isVisible))
+
+        layers[0].cells.removeAll()
+        XCTAssertThrowsError(try MagicaVoxel.encode(layers: layers, palette: [], layout: layout))
+    }
+
+    func testNestedNativeGroupsPreserveRebasedObjectTransforms() throws {
+        var chunks = geometry(1, 1, 1, [0, 0, 0, 7])
+        func group(_ id: Int32, _ children: [Int32]) -> Data {
+            chunk("nGRP", i32(id) + dictionary([:]) + i32(Int32(children.count)) + children.map(i32).reduce(Data(), +))
+        }
+        chunks += [trn(0, child: 1, layer: -1, attrs: ["_name": "Harbor"], frames: [["_t": "3000 0 -40"]]),
+                   group(1, [2, 4]), trn(2, child: 3, layer: -1, attrs: ["_name": "Pier"], frames: [["_r": "17"]]),
+                   group(3, [6]), trn(6, child: 7, layer: -1, attrs: ["_name": "East"], frames: [["_t": "1 3 6"]]),
+                   trn(4, child: 7, layer: -1, attrs: ["_name": "West"], frames: [["_t": "1 2 0"]]),
+                   chunk("nSHP", i32(7) + dictionary([:]) + i32(1) + i32(0) + dictionary([:]))]
+        let scene = try MagicaVoxel.decode(file(chunks))
+        let root = try XCTUnwrap(scene.layout.groups.first { $0.name == "Harbor" })
+        let pier = try XCTUnwrap(scene.layout.groups.first { $0.name == "Pier" })
+        XCTAssertEqual(pier.parentID, root.id)
+        XCTAssertEqual(scene.layout.objects.map(\.groupID), [pier.id, root.id])
+        let a = scene.layout.objects[0], b = scene.layout.objects[1]
+        XCTAssertEqual(a.definitionID, b.definitionID)
+        let pointA = try XCTUnwrap(scene.layers[0].cells.keys.first)
+        let pointB = try XCTUnwrap(scene.layers[1].cells.keys.first)
+        XCTAssertEqual(a.transform.unapply(pointA), b.transform.unapply(pointB))
+        XCTAssertNotNil(scene.origin)
+        let data = try MagicaVoxel.encode(layers: scene.layers, palette: scene.palette, origin: scene.origin, layout: scene.layout)
+        let copy = try MagicaVoxel.decode(data)
+        XCTAssertEqual(copy.layers.map(\.cells), scene.layers.map(\.cells))
+        XCTAssertEqual(copy.origin, scene.origin)
+        XCTAssertEqual(copy.layout, scene.layout)
+    }
+
+    func testExternalSharedGroupBecomesOneMultiLayerDefinition() throws {
+        var chunks = geometry(1, 1, 1, [0, 0, 0, 2]) + geometry(1, 1, 1, [0, 0, 0, 3])
+        chunks += [trn(0, child: 1, layer: -1, frames: [[:]]),
+                   chunk("nGRP", i32(1) + dictionary([:]) + i32(2) + i32(2) + i32(3)),
+                   trn(2, child: 4, layer: -1, attrs: ["_name": "First"], frames: [["_t": "-4 0 0"]]),
+                   trn(3, child: 4, layer: -1, attrs: ["_name": "Second"], frames: [["_r": "17", "_t": "5 1 1"]]),
+                   chunk("nGRP", i32(4) + dictionary([:]) + i32(2) + i32(5) + i32(7)),
+                   trn(5, child: 6, layer: -1, attrs: ["_name": "Base"], frames: [[:]]),
+                   chunk("nSHP", i32(6) + dictionary([:]) + i32(1) + i32(0) + dictionary([:])),
+                   trn(7, child: 8, layer: -1, attrs: ["_name": "Lamp"], frames: [["_t": "1 0 2"]]),
+                   chunk("nSHP", i32(8) + dictionary([:]) + i32(1) + i32(1) + dictionary([:]))]
+        let scene = try MagicaVoxel.decode(file(chunks))
+        XCTAssertEqual(scene.layout.objects.map(\.name), ["First", "Second"])
+        XCTAssertEqual(scene.layers.map(\.name), ["Base", "Lamp", "Base", "Lamp"])
+        let a = scene.layout.objects[0], b = scene.layout.objects[1]
+        XCTAssertEqual(a.definitionID, b.definitionID)
+        XCTAssertEqual(a.layerIDs, Array(scene.layers.map(\.id)[0..<2]))
+        XCTAssertEqual(b.layerIDs, Array(scene.layers.map(\.id)[2..<4]))
+        for index in 0..<2 {
+            let first = try XCTUnwrap(scene.layers[index].cells.keys.first)
+            let second = try XCTUnwrap(scene.layers[index + 2].cells.keys.first)
+            XCTAssertEqual(a.transform.unapply(first), b.transform.unapply(second))
+        }
+        let copy = try MagicaVoxel.decode(MagicaVoxel.encode(layers: scene.layers, palette: [], layout: scene.layout))
+        XCTAssertEqual(copy.layout, scene.layout)
+        XCTAssertEqual(copy.layers.map(\.cells), scene.layers.map(\.cells))
+    }
+
+    func testSigned32BitWorldOriginCanSpanMultipleNativeTransforms() throws {
+        // Native node translations are signed 32-bit. Their composed world transform can be larger.
+        var chunks = geometry(1, 1, 1, [0, 0, 0, 1])
+        chunks += [trn(0, child: 1, layer: -1, frames: [["_t": "2147483647 0 0"]]),
+                   trn(1, child: 2, layer: -1, frames: [["_t": "99 0 0"]]),
+                   chunk("nSHP", i32(2) + dictionary([:]) + i32(1) + i32(0) + dictionary([:]))]
+        let scene = try MagicaVoxel.decode(file(chunks))
+        let bytes = try MagicaVoxel.encode(layers: scene.layers, palette: [], origin: scene.origin, layout: scene.layout)
+        let copy = try MagicaVoxel.decode(bytes)
+        XCTAssertEqual(copy.origin, scene.origin)
+        XCTAssertEqual(copy.layout, scene.layout)
+        XCTAssertEqual(copy.layers.map(\.cells), scene.layers.map(\.cells))
     }
 
     func testMalformedFilesAndUnrepresentableScenesThrow() throws {

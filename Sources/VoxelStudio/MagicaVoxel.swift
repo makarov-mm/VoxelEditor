@@ -12,6 +12,7 @@ enum MagicaVoxel {
         var palette: [Ink]
         /// Add to an editor-space cell to recover its original world-space coordinates.
         var origin: Cell?
+        var layout = SceneLayout()
     }
 
     static func validOrigin(_ origin: Cell?) -> Bool {
@@ -42,9 +43,10 @@ enum MagicaVoxel {
         return try file.scene(from: data)
     }
 
-    static func encode(layers: [VoxelLayer], palette: [Ink], origin: Cell? = nil) throws -> Data {
+    static func encode(layers: [VoxelLayer], palette: [Ink], origin: Cell? = nil,
+                       layout: SceneLayout = .init()) throws -> Data {
         guard validOrigin(origin) else { throw Issue.limit("The stored VOX world offset is out of range.") }
-        return try VoxEncoder(layers: layers, palette: palette, origin: origin ?? Cell(0, 0, 0)).encode()
+        return try VoxEncoder(layers: layers, palette: palette, origin: origin ?? Cell(0, 0, 0), layout: layout).encode()
     }
 
     fileprivate static func defaultPalette() -> [Ink] {
@@ -127,12 +129,45 @@ private struct VoxCursor {
     }
 }
 
-private struct VoxTransform {
+private struct VoxTransform: Hashable {
     // Each signed element chooses a one-based source axis for one output row.
     var rows = [1, 2, 3]
     var shift = Cell(0, 0, 0)
 
-    init() {}
+    init(rows: [Int] = [1, 2, 3], shift: Cell = Cell(0, 0, 0)) {
+        self.rows = rows
+        self.shift = shift
+    }
+
+    // Basis changes use cube corners. VoxelTransform instead maps integer cell addresses.
+    static let toVOX = Self(rows: [1, -3, 2])
+    static let toEditor = Self(rows: [1, 3, -2])
+
+    init(editor: VoxelTransform) {
+        let axes = editor.axes
+        let shift = editor.offset.offset(axes[0] < 0 ? 1 : 0, axes[1] < 0 ? 1 : 0, axes[2] < 0 ? 1 : 0)
+        self = Self.toVOX.concatenating(Self(rows: axes, shift: shift)).concatenating(Self.toEditor)
+    }
+
+    var editor: VoxelTransform {
+        let result = Self.toEditor.concatenating(self).concatenating(Self.toVOX)
+        return VoxelTransform(axes: result.rows, offset: result.cell(Cell(0, 0, 0)))
+    }
+
+    var inverse: Self {
+        var result = Self()
+        for (index, axis) in rows.enumerated() {
+            result.rows[abs(axis) - 1] = (axis < 0 ? -1 : 1) * (index + 1)
+        }
+        result.shift = result.point(Cell(-shift.x, -shift.y, -shift.z))
+        return result
+    }
+
+    var frame: Attributes {
+        var rotation = (abs(rows[0]) - 1) | ((abs(rows[1]) - 1) << 2)
+        for i in rows.indices where rows[i] < 0 { rotation |= 1 << (4 + i) }
+        return ["_r": String(rotation), "_t": "\(shift.x) \(shift.y) \(shift.z)"]
+    }
 
     init(_ frame: Attributes) throws {
         if let rotation = frame["_r"] {
@@ -309,11 +344,30 @@ private struct VoxFile {
         .limit("This scene exceeds two million voxels. Split it into smaller files before importing.")
     }
 
+    private struct Part: Hashable {
+        var model: Int
+        var local: VoxTransform
+    }
+
+    private struct Definition: Hashable {
+        var parts: [Part]
+        var requestedID: String?
+    }
+
     func scene(from data: Data) throws -> MagicaVoxel.Scene {
         var layers: [VoxelLayer] = []
         var minCell: Cell?, maxCell: Cell?
         var total = 0
-        func instantiate(_ id: Int, _ transform: VoxTransform, _ name: String?, _ hidden: Bool) throws {
+        var layout = SceneLayout()
+        var usedIDs = Set<UUID>()
+        func uniqueID(_ text: String?) -> UUID {
+            if let value = text.flatMap(UUID.init(uuidString:)), usedIDs.insert(value).inserted { return value }
+            let fresh = UUID()
+            usedIDs.insert(fresh)
+            return fresh
+        }
+        var layerOrder: [UUID: Int] = [:], objectOrder: [UUID: Int] = [:], groupOrder: [UUID: Int] = [:]
+        func instantiate(_ id: Int, _ transform: VoxTransform, _ name: String?, _ hidden: Bool, _ attrs: Attributes = [:]) throws {
             guard models.indices.contains(id) else { throw VoxError.invalid("Unknown model reference.") }
             guard layers.count < EditorModel.layerLimit else {
                 throw VoxError.limit("Forma supports up to \(EditorModel.layerLimit) objects per scene. "
@@ -342,7 +396,10 @@ private struct VoxFile {
                 }
             }
             let label = name.flatMap { $0.isEmpty ? nil : $0 } ?? "Model \(id + 1)"
-            layers.append(VoxelLayer(name: label, isVisible: !hidden, cells: cells))
+            let layerID = uniqueID(attrs["_forma_layer"])
+            layerOrder[layerID] = attrs["_forma_order"].flatMap(Int.init)
+            layers.append(VoxelLayer(id: layerID, name: label, isVisible: !hidden,
+                                     isLocked: attrs["_forma_locked"] == "1", cells: cells))
         }
 
         if nodes.isEmpty {
@@ -352,7 +409,28 @@ private struct VoxFile {
             }
         } else {
             var visited = Set<Int>(), path = Set<Int>(), visits = 0
-            func visit(_ id: Int, _ parent: VoxTransform, _ inherited: String?, _ hidden: Bool) throws {
+            let references = nodes.values.flatMap(\.children)
+            let incoming = Dictionary(references.map { ($0, 1) }, uniquingKeysWith: +)
+            var parts: [[Part]] = []
+            var definitionIDs: [Definition: UUID] = [:]
+            func beginObject(_ attrs: Attributes, _ name: String, _ group: UUID?, _ pose: VoxTransform) -> Int {
+                let id = uniqueID(attrs["_forma_object"])
+                objectOrder[id] = attrs["_forma_order"].flatMap(Int.init)
+                layout.objects.append(SceneObject(id: id, name: name, groupID: group, definitionID: UUID(),
+                                                  layerIDs: [], transform: pose.editor,
+                                                  libraryPartID: attrs["_forma_library"].flatMap(UUID.init(uuidString:))))
+                parts.append([])
+                return parts.count - 1
+            }
+            func finishObject(_ index: Int, _ attrs: Attributes) throws {
+                guard !parts[index].isEmpty else { throw VoxError.invalid("An object has no model layers.") }
+                let key = Definition(parts: parts[index], requestedID: attrs["_forma_definition"])
+                let id = definitionIDs[key] ?? uniqueID(key.requestedID)
+                definitionIDs[key] = id
+                layout.objects[index].definitionID = id
+            }
+            func visit(_ id: Int, _ parent: VoxTransform, _ inherited: String?, _ hidden: Bool,
+                       group: UUID?, belowGroup: Bool, object: Int?, objectPose: VoxTransform) throws {
                 guard let node = nodes[id], path.insert(id).inserted else {
                     throw VoxError.invalid("Invalid node reference or cyclic scene graph.")
                 }
@@ -366,18 +444,44 @@ private struct VoxFile {
                 case let .transform(attrs, child, layer, local):
                     let info = layerInfo[layer] ?? [:]
                     try visit(child, parent.concatenating(local), attrs["_name"] ?? info["_name"] ?? inherited,
-                              hidden || attrs["_hidden"] == "1" || info["_hidden"] == "1")
+                              hidden || attrs["_hidden"] == "1" || info["_hidden"] == "1",
+                              group: group, belowGroup: belowGroup, object: object, objectPose: objectPose)
                 case let .group(attrs, children):
-                    for child in children {
-                        try visit(child, parent, attrs["_name"] ?? inherited, hidden || attrs["_hidden"] == "1")
+                    let name = (attrs["_name"] ?? inherited).flatMap { $0.isEmpty ? nil : $0 }
+                    let isObject = object == nil && (attrs["_forma_object"] != nil || (incoming[id] ?? 0) > 1)
+                    var nextGroup = group, nextObject = object
+                    if isObject {
+                        nextObject = beginObject(attrs, name ?? "Object \(id)", group, parent)
+                    } else if object == nil && (belowGroup || name != nil || attrs["_forma_group"] != nil) {
+                        guard layout.groups.count < 4096 else { throw VoxError.limit("This scene contains too many groups.") }
+                        let groupID = uniqueID(attrs["_forma_group"])
+                        groupOrder[groupID] = attrs["_forma_order"].flatMap(Int.init)
+                        layout.groups.append(SceneGroup(id: groupID, name: name ?? "Group \(id)", parentID: group))
+                        nextGroup = groupID
                     }
+                    for child in children {
+                        try visit(child, parent, name, hidden || attrs["_hidden"] == "1", group: nextGroup,
+                                  belowGroup: true, object: nextObject, objectPose: isObject ? parent : objectPose)
+                    }
+                    if isObject, let nextObject { try finishObject(nextObject, attrs) }
                 case let .shape(attrs, model):
-                    try instantiate(model, parent, attrs["_name"] ?? inherited, hidden || attrs["_hidden"] == "1")
+                    try instantiate(model, parent, attrs["_name"] ?? inherited, hidden || attrs["_hidden"] == "1", attrs)
+                    let layer = layers[layers.count - 1]
+                    if let object {
+                        layout.objects[object].layerIDs.append(layer.id)
+                        parts[object].append(Part(model: model, local: objectPose.inverse.concatenating(parent)))
+                    } else if attrs["_forma_plain"] != "1" {
+                        let index = beginObject([:], layer.name, group, parent)
+                        layout.objects[index].layerIDs.append(layer.id)
+                        parts[index].append(Part(model: model, local: VoxTransform()))
+                        try finishObject(index, [:])
+                    }
                 }
             }
-            let children = Set(nodes.values.flatMap(\.children))
-            let roots = nodes.keys.filter { !children.contains($0) }.sorted()
-            for id in roots { try visit(id, VoxTransform(), nil, false) }
+            let roots = nodes.keys.filter { incoming[$0] == nil }.sorted()
+            for id in roots {
+                try visit(id, VoxTransform(), nil, false, group: nil, belowGroup: false, object: nil, objectPose: VoxTransform())
+            }
             guard visited.count == nodes.count, !layers.isEmpty else {
                 throw VoxError.invalid("Incomplete scene graph.")
             }
@@ -402,6 +506,10 @@ private struct VoxFile {
                 guard MagicaVoxel.validOrigin(origin) else {
                     throw VoxError.limit("The scene origin exceeds the signed 32-bit VOX transform range.")
                 }
+                for i in layout.objects.indices {
+                    let t = layout.objects[i].transform
+                    layout.objects[i].transform = VoxelTransform(axes: t.axes, offset: t.offset.offset(dx, dy, dz))
+                }
                 for i in layers.indices {
                     var rebased: [Cell: Ink] = [:]
                     rebased.reserveCapacity(layers[i].cells.count)
@@ -413,7 +521,18 @@ private struct VoxFile {
         let order = displayOrder ?? Array(1...255)
         var seen = Set<Ink>()
         let swatches = order.map { colors[$0 - 1] }.filter { seen.insert($0).inserted }
-        return MagicaVoxel.Scene(layers: layers, palette: swatches, origin: origin)
+        func restoreOrder<T: Identifiable>(_ items: inout [T], _ order: [UUID: Int]) where T.ID == UUID {
+            if Set(order.values) == Set(items.indices), order.count == items.count {
+                items.sort { order[$0.id]! < order[$1.id]! }
+            }
+        }
+        restoreOrder(&layers, layerOrder)
+        restoreOrder(&layout.objects, objectOrder)
+        restoreOrder(&layout.groups, groupOrder)
+        guard layout.isValid(layerIDs: Set(layers.map(\.id))) else {
+            throw VoxError.limit("The object hierarchy or transformed model origin is outside the supported range.")
+        }
+        return MagicaVoxel.Scene(layers: layers, palette: swatches, origin: origin, layout: layout)
     }
 }
 
@@ -449,6 +568,18 @@ private struct VoxEncoder {
     let layers: [VoxelLayer]
     let palette: [Ink]
     let origin: Cell
+    let layout: SceneLayout
+
+    private struct ModelReference {
+        var model: Int
+        var pivot: Cell
+        var source: Int
+    }
+
+    private struct Member: Hashable {
+        var definition: UUID
+        var slot: Int
+    }
 
     func encode() throws -> Data {
         guard !layers.isEmpty, layers.count <= EditorModel.layerLimit else {
@@ -479,24 +610,48 @@ private struct VoxEncoder {
         for color in palette { include(color) }
 
         var chunks = Data()
-        func transform(_ id: Int, child: Int, layer: Int, name: String?, t: Cell) -> Data {
-            var p = Data()
-            p.put(id)
-            p.putDict(name.map { ["_name": $0] } ?? [:])
-            p.put(child)
-            p.put(-1)
-            p.put(layer)
-            p.put(1)
-            p.putDict(["_t": "\(t.x) \(t.y) \(t.z)"])
-            return p
+        let layerIDs = Set(layers.map(\.id))
+        guard layerIDs.count == layers.count, layout.isValid(layerIDs: layerIDs),
+              Set(layout.groups.map(\.id)).isDisjoint(with: Set(layout.objects.map(\.id))) else {
+            throw VoxError.invalid("The object hierarchy or layer membership is inconsistent.")
         }
-
-        var transforms: [Cell] = []
-        for layer in layers {
+        let parents = Dictionary(uniqueKeysWithValues: layout.groups.map { ($0.id, $0.parentID) })
+        for group in layout.groups {
+            var depth = 1, parent = group.parentID
+            while let id = parent {
+                depth += 1
+                parent = parents[id] ?? nil
+            }
+            // Each group uses a transform and group node. Leave room for root, object, and shape pairs.
+            guard 2 * depth + 6 <= 256 else {
+                throw VoxError.limit("Move deeply nested groups closer to the scene root before exporting.")
+            }
+        }
+        var membership: [UUID: (SceneObject, Int)] = [:]
+        for object in layout.objects {
+            for (slot, layerID) in object.layerIDs.enumerated() { membership[layerID] = (object, slot) }
+        }
+        var references: [ModelReference] = []
+        var shared: [Member: ModelReference] = [:]
+        var modelCount = 0
+        for (i, layer) in layers.enumerated() {
+            guard layer.cells.keys.allSatisfy(\.inBounds) else { throw VoxError.limit("A voxel lies outside the editing grid.") }
+            let owner = membership[layer.id]
+            let pose = owner?.0.transform ?? .identity
+            let member = owner.map { Member(definition: $0.0.definitionID, slot: $0.1) }
+            if let member, let reference = shared[member] {
+                let source = layers[reference.source]
+                let sourcePose = membership[source.id]!.0.transform
+                guard source.cells.count == layer.cells.count, layer.cells.allSatisfy({ cell, ink in
+                    source.cells[sourcePose.apply(pose.unapply(cell))] == ink
+                }) else { throw VoxError.invalid("Linked object instances contain different definition geometry.") }
+                references.append(reference)
+                continue
+            }
+            let local = VoxTransform(editor: pose).inverse.concatenating(.toVOX)
+            func vox(_ cell: Cell) -> Cell { local.cell(cell) }
             var minimum: Cell?, maximum: Cell?
-            func vox(_ p: Cell) -> Cell { Cell(p.x, -p.z - 1, p.y) }
             for p in layer.cells.keys {
-                guard p.inBounds else { throw VoxError.limit("A voxel lies outside the editing grid.") }
                 let v = vox(p)
                 if let a = minimum, let b = maximum {
                     minimum = Cell(min(a.x, v.x), min(a.y, v.y), min(a.z, v.z))
@@ -508,11 +663,10 @@ private struct VoxEncoder {
             }
             let a = minimum ?? Cell(0, 0, 0), b = maximum ?? a
             let size = Cell(b.x - a.x + 1, b.y - a.y + 1, b.z - a.z + 1)
-            let pivot = a.offset(size.x / 2 + origin.x, size.y / 2 - origin.z, size.z / 2 + origin.y)
-            guard [pivot.x, pivot.y, pivot.z].allSatisfy({ Int32(exactly: $0) != nil }) else {
-                throw VoxError.limit("A model pivot is outside the signed 32-bit VOX transform range.")
-            }
-            transforms.append(pivot)
+            let reference = ModelReference(model: modelCount, pivot: a.offset(size.x / 2, size.y / 2, size.z / 2), source: i)
+            modelCount += 1
+            references.append(reference)
+            if let member { shared[member] = reference }
             var dimensions = Data()
             dimensions.put(size.x)
             dimensions.put(size.y)
@@ -531,28 +685,79 @@ private struct VoxEncoder {
             chunks.chunk("XYZI", content: xyzi)
         }
 
-        chunks.chunk("nTRN", content: transform(0, child: 1, layer: -1, name: nil, t: Cell(0, 0, 0)))
-        var group = Data()
-        group.put(1)
-        group.putDict([:])
-        group.put(layers.count)
-        for i in layers.indices { group.put(2 + 2 * i) }
-        chunks.chunk("nGRP", content: group)
+        func transform(_ id: Int, layer: Int = -1, name: String? = nil, pose: VoxTransform = .init()) throws {
+            guard [pose.shift.x, pose.shift.y, pose.shift.z].allSatisfy({ Int32(exactly: $0) != nil }) else {
+                throw VoxError.limit("A model pivot is outside the signed 32-bit VOX transform range.")
+            }
+            var p = Data()
+            p.put(id)
+            p.putDict(name.map { ["_name": $0] } ?? [:])
+            p.put(id + 1)
+            p.put(-1)
+            p.put(layer)
+            p.put(1)
+            p.putDict(pose.frame)
+            chunks.chunk("nTRN", content: p)
+        }
+        func group(_ id: Int, _ attrs: Attributes, _ children: [Int]) {
+            var payload = Data()
+            payload.put(id)
+            payload.putDict(attrs)
+            payload.put(children.count)
+            for child in children { payload.put(child) }
+            chunks.chunk("nGRP", content: payload)
+        }
+
+        // Split the world origin across root and child nodes at the signed 32-bit boundary.
+        let originVOX = Cell(origin.x, -origin.z, origin.y)
+        func clamped(_ v: Int) -> Int { Int(Int32(clamping: v)) }
+        let rootOffset = Cell(clamped(originVOX.x), clamped(originVOX.y), clamped(originVOX.z))
+        let remainder = originVOX.offset(-rootOffset.x, -rootOffset.y, -rootOffset.z)
+        let originPose = VoxTransform(shift: remainder)
+        let groupBase = 2, objectBase = groupBase + 2 * layout.groups.count
+        let layerBase = objectBase + 2 * layout.objects.count
+        var children: [UUID?: [Int]] = [:]
+        for (i, item) in layout.groups.enumerated() { children[item.parentID, default: []].append(groupBase + 2 * i) }
+        for (i, item) in layout.objects.enumerated() { children[item.groupID, default: []].append(objectBase + 2 * i) }
+        for (i, layer) in layers.enumerated() where membership[layer.id] == nil {
+            children[nil, default: []].append(layerBase + 2 * i)
+        }
+        let layerNodes = Dictionary(uniqueKeysWithValues: layers.enumerated().map { ($0.element.id, layerBase + 2 * $0.offset) })
+        try transform(0, pose: VoxTransform(shift: rootOffset))
+        group(1, [:], children[nil] ?? [])
+        for (i, item) in layout.groups.enumerated() {
+            let id = groupBase + 2 * i
+            try transform(id, name: item.name)
+            group(id + 1, ["_forma_group": item.id.uuidString, "_forma_order": String(i)], children[item.id] ?? [])
+        }
+        for (i, object) in layout.objects.enumerated() {
+            let id = objectBase + 2 * i
+            try transform(id, name: object.name, pose: originPose.concatenating(VoxTransform(editor: object.transform)))
+            var attrs = ["_forma_object": object.id.uuidString, "_forma_definition": object.definitionID.uuidString,
+                         "_forma_order": String(i)]
+            attrs["_forma_library"] = object.libraryPartID?.uuidString
+            group(id + 1, attrs, object.layerIDs.compactMap { layerNodes[$0] })
+        }
         for (i, layer) in layers.enumerated() {
-            let id = 2 + i * 2
-            chunks.chunk("nTRN", content: transform(id, child: id + 1, layer: i, name: layer.name, t: transforms[i]))
+            let id = layerBase + 2 * i, reference = references[i]
+            let plain = membership[layer.id] == nil
+            let offset = VoxTransform(shift: reference.pivot)
+            try transform(id, layer: i, name: layer.name, pose: plain ? originPose.concatenating(offset) : offset)
+            var attrs = ["_forma_layer": layer.id.uuidString, "_forma_order": String(i)]
+            if plain { attrs["_forma_plain"] = "1" }
+            if layer.isLocked { attrs["_forma_locked"] = "1" }
             var shape = Data()
             shape.put(id + 1)
-            shape.putDict([:])
+            shape.putDict(attrs)
             shape.put(1)
-            shape.put(i)
+            shape.put(reference.model)
             shape.putDict([:])
             chunks.chunk("nSHP", content: shape)
             var info = Data()
             info.put(i)
-            var attrs = ["_name": layer.name]
-            if !layer.isVisible { attrs["_hidden"] = "1" }
-            info.putDict(attrs)
+            var layerAttrs = ["_name": layer.name]
+            if !layer.isVisible { layerAttrs["_hidden"] = "1" }
+            info.putDict(layerAttrs)
             info.put(-1)
             chunks.chunk("LAYR", content: info)
         }

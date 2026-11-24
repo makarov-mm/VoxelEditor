@@ -75,7 +75,8 @@ struct VoxelLayer: Identifiable {
     var name: String
     var isVisible = true
     var isLocked = false
-    var cells: [Cell: Ink] = [:]
+    var cells: [Cell: Ink] = [:] { didSet { geometryID = UUID() } }
+    private(set) var geometryID = UUID()
 }
 
 private enum ProjectError: LocalizedError {
@@ -94,7 +95,7 @@ private enum ProjectError: LocalizedError {
 }
 
 private struct ProjectFile: Codable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     struct Voxel: Codable {
         var cell: Cell
@@ -109,6 +110,13 @@ private struct ProjectFile: Codable {
         var voxels: [Voxel]
     }
 
+    struct Definition: Codable {
+        var id: UUID
+        var members: [[Voxel]]
+    }
+
+    var layout: SceneLayout?
+    var definitions: [Definition]?
     var version: Int
     var title: String
     var palette: [Ink]
@@ -124,22 +132,44 @@ private struct ProjectFile: Codable {
     }
 
     func validatedLayers() throws -> [VoxelLayer] {
-        guard version == Self.currentVersion else { throw ProjectError.unsupportedVersion }
+        guard (1...Self.currentVersion).contains(version) else { throw ProjectError.unsupportedVersion }
         guard MagicaVoxel.validOrigin(voxOrigin), !layers.isEmpty, layers.count <= EditorModel.layerLimit,
               layers.contains(where: { $0.id == activeLayerID }),
               Set(layers.map(\.id)).count == layers.count, !title.isEmpty,
               !palette.isEmpty, palette.count <= EditorModel.paletteLimit,
               palette.allSatisfy(\.isValid) else { throw ProjectError.invalidProject }
 
+        let layout = layout ?? SceneLayout()
+        guard layout.isValid(layerIDs: Set(layers.map(\.id))),
+              version >= 2 || (layout == SceneLayout() && definitions == nil) else { throw ProjectError.invalidProject }
+        let defs = definitions ?? []
+        guard Set(defs.map(\.id)) == Set(layout.objects.map(\.definitionID)),
+              Set(defs.map(\.id)).count == defs.count else { throw ProjectError.invalidProject }
+        let byID = Dictionary(uniqueKeysWithValues: defs.map { ($0.id, $0.members) })
+        var members: [UUID: ([Voxel], VoxelTransform)] = [:]
+        for object in layout.objects {
+            guard let parts = byID[object.definitionID], parts.count == object.layerIDs.count else {
+                throw ProjectError.invalidProject
+            }
+            for (id, part) in zip(object.layerIDs, parts) { members[id] = (part, object.transform) }
+        }
+        var total = 0
         return try layers.map { source in
             guard !source.name.isEmpty, source.voxels.count <= Cell.gridSize * Cell.gridSize * Cell.gridSize else {
                 throw ProjectError.invalidProject
             }
+            let member = members[source.id]
+            guard member == nil || source.voxels.isEmpty else { throw ProjectError.invalidProject }
+            let records = member?.0 ?? source.voxels
+            total += records.count
+            guard total <= 16_777_216 else { throw ProjectError.tooLarge }
             var cells: [Cell: Ink] = [:]
-            cells.reserveCapacity(source.voxels.count)
-            for voxel in source.voxels {
-                guard voxel.cell.inBounds, voxel.ink.isValid,
-                      cells.updateValue(voxel.ink, forKey: voxel.cell) == nil else {
+            cells.reserveCapacity(records.count)
+            for voxel in records {
+                guard voxel.cell.isSceneCoordinate else { throw ProjectError.invalidProject }
+                let cell = member?.1.apply(voxel.cell) ?? voxel.cell
+                guard cell.inBounds, voxel.ink.isValid,
+                      cells.updateValue(voxel.ink, forKey: cell) == nil else {
                     throw ProjectError.invalidProject
                 }
             }
@@ -156,12 +186,24 @@ struct ProjectSnapshot {
     let palette: [Ink]
     let activeLayerID: UUID
     let voxOrigin: Cell?
+    var layout = SceneLayout()
 
     func write(to url: URL) throws {
+        guard layers.reduce(0, { $0 + $1.cells.count }) <= 16_777_216 else { throw ProjectError.tooLarge }
+        let byID = Dictionary(uniqueKeysWithValues: layers.map { ($0.id, $0) })
+        let members = Set(layout.objects.flatMap(\.layerIDs))
+        var seen = Set<UUID>()
+        let definitions = layout.objects.compactMap { object -> ProjectFile.Definition? in
+            guard seen.insert(object.definitionID).inserted else { return nil }
+            let parts = object.layerIDs.map { id in
+                byID[id]!.cells.map { ProjectFile.Voxel(cell: object.transform.unapply($0.key), ink: $0.value) }
+            }
+            return ProjectFile.Definition(id: object.definitionID, members: parts)
+        }
         let file = ProjectFile(
-            version: ProjectFile.currentVersion, title: title, palette: palette, activeLayerID: activeLayerID,
+            layout: layout, definitions: definitions, version: ProjectFile.currentVersion, title: title, palette: palette, activeLayerID: activeLayerID,
             layers: layers.map { layer in
-                let voxels = layer.cells.map { ProjectFile.Voxel(cell: $0.key, ink: $0.value) }
+                let voxels = members.contains(layer.id) ? [] : layer.cells.map { ProjectFile.Voxel(cell: $0.key, ink: $0.value) }
                 return ProjectFile.Layer(id: layer.id, name: layer.name, isVisible: layer.isVisible,
                                          isLocked: layer.isLocked ? true : nil, voxels: voxels)
             }, voxOrigin: voxOrigin
@@ -184,8 +226,15 @@ final class EditorModel: ObservableObject {
         "538F8D", "82BCBA", "D4EBDA", "697B82"
     ].map { Ink(hex: $0) }
 
+    @Published private(set) var sceneLayout = SceneLayout()
+    private var changingScene = false
+    private var definitionVersions: [UUID: UUID] = [:]
+    private var changedMemberCells: Set<Cell>?
+    @Published private var linkedStampPartID: UUID?
+    var isPlacingLinkedObject: Bool { linkedStampPartID != nil }
     @Published private(set) var layers: [VoxelLayer] {
         didSet {
+            if !changingScene { synchronizeDefinitions(after: oldValue) }
             cancelPaste()
             merged = nil
             clipped = nil
@@ -267,7 +316,17 @@ final class EditorModel: ObservableObject {
         var changes: [Cell: Delta] = [:]
     }
 
+    private struct SceneState {
+        var layout: SceneLayout
+        var layers: [VoxelLayer]
+        var active: UUID
+        var selection: Set<Cell>
+        var versions: [UUID: UUID]
+    }
+
     private enum Change {
+        case scene(SceneState, SceneState)
+        case objectPose(UUID, before: VoxelTransform, after: VoxelTransform, selectionBefore: Set<Cell>, selectionAfter: Set<Cell>)
         case voxels(UUID, [Cell: Delta], selectionBefore: Set<Cell>? = nil, selectionAfter: Set<Cell>? = nil)
         case uniform(UUID, Set<Cell>, before: Ink?, after: Ink)
         case move(layer: UUID, source: Set<Cell>, delta: Cell)
@@ -430,7 +489,7 @@ final class EditorModel: ObservableObject {
                 }
             }
         }
-        guard !edits.isEmpty else { return }
+        guard !edits.isEmpty, allowsLinkedEdit(in: index, additions: edits.compactMap { $0.value.before == nil ? $0.key : nil }) else { return }
         for (cell, change) in edits {
             if stroke?.changes[cell] != nil {
                 stroke?.changes[cell]?.after = change.after
@@ -438,6 +497,7 @@ final class EditorModel: ObservableObject {
                 stroke?.changes[cell] = change
             }
         }
+        markChangedCells(Set(edits.keys), in: index)
         write(edits, in: &layers[index].cells, forward: true)
         isDirty = true
     }
@@ -564,6 +624,10 @@ final class EditorModel: ObservableObject {
                 return false
             }
         }
+        guard let index = visibleActiveLayerIndex else { return false }
+        if activeSceneObject != nil {
+            return allowsLinkedEdit(in: index, additions: selection.map { $0.offset(delta) }, removals: selection)
+        }
         return true
     }
 
@@ -572,6 +636,7 @@ final class EditorModel: ObservableObject {
         guard canMoveSelection(by: delta), let index = visibleActiveLayerIndex else { return false }
         endStroke()
         let source = selection
+        markChangedCells(source.union(source.map { $0.offset(delta) }), in: index)
         selection = relocate(source, by: delta, in: &layers[index].cells)
         record(.move(layer: activeLayerID, source: source, delta: delta))
         return true
@@ -593,6 +658,7 @@ final class EditorModel: ObservableObject {
     }
 
     func addLayer() {
+        if let object = activeSceneObject { _ = addObjectLayer(to: object.id); return }
         endStroke()
         guard layers.count < Self.layerLimit else { return }
         var number = layers.count + 1
@@ -607,6 +673,7 @@ final class EditorModel: ObservableObject {
     }
 
     func removeActiveLayer() {
+        if let object = activeSceneObject { removeObjectLayer(from: object); return }
         endStroke()
         guard layers.count > 1, let index = layers.firstIndex(where: { $0.id == activeLayerID && !$0.isLocked }) else { return }
         let removed = layers.remove(at: index)
@@ -696,19 +763,30 @@ final class EditorModel: ObservableObject {
 
     private func replay(_ change: Change, forward: Bool) {
         switch change {
+        case let .objectPose(id, before, after, oldSelection, newSelection):
+            guard let index = sceneLayout.objects.firstIndex(where: { $0.id == id }) else { return }
+            applyTransform(at: index, to: forward ? after : before)
+            if tool == .select, sceneLayout.objects[index].layerIDs.contains(activeLayerID) {
+                selection = forward ? newSelection : oldSelection
+            }
+        case let .scene(before, after):
+            restoreScene(forward ? after : before)
         case let .voxels(id, deltas, selectionBefore, selectionAfter):
             guard let index = layers.firstIndex(where: { $0.id == id }) else { return }
+            markChangedCells(Set(deltas.keys), in: index)
             write(deltas, in: &layers[index].cells, forward: forward)
             if tool == .select, id == activeLayerID, let restored = forward ? selectionAfter : selectionBefore {
                 selection = restored
             }
         case let .uniform(id, cells, before, after):
             guard let index = layers.firstIndex(where: { $0.id == id }) else { return }
+            markChangedCells(cells, in: index)
             setInk(forward ? after : before, for: cells, in: &layers[index].cells)
         case let .move(id, source, delta):
             guard let i = layers.firstIndex(where: { $0.id == id }) else { return }
             let previous = forward ? source : Set(source.map { $0.offset(delta.x, delta.y, delta.z) })
             let direction = forward ? delta : Cell(-delta.x, -delta.y, -delta.z)
+            markChangedCells(previous.union(previous.map { $0.offset(direction) }), in: i)
             let moved = relocate(previous, by: direction, in: &layers[i].cells)
             if tool == .select && activeLayerID == id { selection = moved }
         case let .layer(layer, index, inserted, oldActive, newActive):
@@ -741,7 +819,7 @@ final class EditorModel: ObservableObject {
     }
 
     private func replaceLayers(_ newLayers: [VoxelLayer], activeID: UUID, title: String, palette: [Ink],
-                               url: URL?, origin: Cell? = nil) {
+                               url: URL?, origin: Cell? = nil, layout: SceneLayout = SceneLayout()) {
         stroke = nil
         clearSelection()
         isolatedLayerID = nil
@@ -754,7 +832,11 @@ final class EditorModel: ObservableObject {
         shapeWallThickness = 1
         undoStack.removeAll()
         redoStack.removeAll()
+        changingScene = true
+        sceneLayout = layout
+        definitionVersions.removeAll()
         layers = newLayers
+        changingScene = false
         activeLayerID = activeID
         self.title = title
         projectID = UUID()
@@ -838,7 +920,7 @@ final class EditorModel: ObservableObject {
         guard shouldCloseProject() else { return }
         let active = scene.layers.last(where: { $0.isVisible }) ?? scene.layers[0]
         replaceLayers(scene.layers, activeID: active.id, title: url.deletingPathExtension().lastPathComponent,
-                      palette: scene.palette, url: nil, origin: scene.origin)
+                      palette: scene.palette, url: nil, origin: scene.origin, layout: scene.layout)
         // An imported document never inherits its source URL as a native save destination.
         savedState = UUID()
         isDirty = true
@@ -857,7 +939,7 @@ final class EditorModel: ObservableObject {
     }
 
     func exportVOX(to url: URL) throws {
-        let data = try MagicaVoxel.encode(layers: layers, palette: palette, origin: voxOrigin)
+        let data = try MagicaVoxel.encode(layers: layers, palette: palette, origin: voxOrigin, layout: sceneLayout)
         try data.write(to: url, options: .atomic)
     }
 
@@ -881,7 +963,7 @@ final class EditorModel: ObservableObject {
             }
         }
         replaceLayers(newLayers, activeID: file.activeLayerID, title: file.title, palette: file.palette,
-                      url: url, origin: file.voxOrigin)
+                      url: url, origin: file.voxOrigin, layout: file.layout ?? SceneLayout())
     }
 
     @discardableResult
@@ -918,13 +1000,13 @@ final class EditorModel: ObservableObject {
 
     func snapshot(named name: String? = nil) -> ProjectSnapshot {
         ProjectSnapshot(title: name ?? title, layers: layers, palette: palette,
-                        activeLayerID: activeLayerID, voxOrigin: voxOrigin)
+                        activeLayerID: activeLayerID, voxOrigin: voxOrigin, layout: sceneLayout)
     }
 
     func restoreDraft(from url: URL) throws {
         let (file, layers) = try ProjectFile.read(from: url)
         replaceLayers(layers, activeID: file.activeLayerID, title: file.title, palette: file.palette,
-                      url: nil, origin: file.voxOrigin)
+                      url: nil, origin: file.voxOrigin, layout: file.layout ?? SceneLayout())
         savedState = UUID()
         isDirty = true
     }
@@ -1103,8 +1185,9 @@ extension EditorModel {
     }
 
     private func applyUniformEdit(to cells: Set<Cell>, in index: Int, before: Ink?) -> Bool {
-        guard !cells.isEmpty else { return false }
+        guard !cells.isEmpty, allowsLinkedEdit(in: index, additions: before == nil ? Array(cells) : []) else { return false }
         endStroke()
+        markChangedCells(cells, in: index)
         setInk(ink, for: cells, in: &layers[index].cells)
         record(.uniform(layers[index].id, cells, before: before, after: ink))
         return true
@@ -1163,9 +1246,11 @@ extension EditorModel {
     }
 
     private func commit(_ changes: [Cell: Delta], in index: Int, selecting selected: Set<Cell>? = nil) -> Bool {
-        guard !changes.isEmpty else { return false }
+        guard !changes.isEmpty, allowsLinkedEdit(in: index, additions: changes.compactMap { $0.value.before == nil ? $0.key : nil },
+                                                  removals: Set(changes.compactMap { $0.value.after == nil ? $0.key : nil })) else { return false }
         endStroke()
         let previous = selected == nil ? nil : selection
+        markChangedCells(Set(changes.keys), in: index)
         write(changes, in: &layers[index].cells, forward: true)
         if let selected { selection = selected }
         record(.voxels(layers[index].id, changes, selectionBefore: previous, selectionAfter: selected))
@@ -1222,7 +1307,14 @@ extension EditorModel {
         guard anchor.inBounds, visibleActiveLayerIndex != nil else { return false }
         let last = anchor.offset(fragment.size).offset(-1, -1, -1)
         guard last.inBounds, isEditableHeight(last.y) else { return false }
-        let occupied = editingCells
+        if let part = linkedStampPartID {
+            let count = libraryObject(for: part)?.layerIDs.count ?? 1
+            guard layers.count + count <= Self.layerLimit else { return false }
+        } else if let index = visibleActiveLayerIndex, activeSceneObject != nil,
+                  !allowsLinkedEdit(in: index, additions: fragment.cells.keys.map { anchor.offset($0) }) {
+            return false
+        }
+        let occupied = linkedStampPartID == nil ? editingCells : visibleCells
         // On a sparse destination, hover checks should scale with the smaller of the two collections.
         if occupied.count < fragment.cells.count {
             return occupied.keys.allSatisfy { fragment.cells[$0.offset(-anchor.x, -anchor.y, -anchor.z)] == nil }
@@ -1234,6 +1326,7 @@ extension EditorModel {
         guard pendingPaste != nil else { return }
         pendingPaste = nil
         stampName = nil
+        linkedStampPartID = nil
         pasteAnchor = nil
         pasteAllowed = false
     }
@@ -1242,11 +1335,16 @@ extension EditorModel {
     // remains armed on the same editable layer, with its next position revalidated.
     private func keepingStamp<Result>(_ action: () -> Result) -> Result {
         let name = stampName, fragment = pendingPaste, anchor = pasteAnchor, layer = activeLayerID
+        let part = linkedStampPartID
         let result = action()
-        if let name, let fragment, pendingPaste == nil, activeLayerID == layer,
+        if let name, let fragment, pendingPaste == nil, (activeLayerID == layer || part != nil),
            visibleActiveLayerIndex != nil, tool == .select {
-            pendingPaste = fragment
-            stampName = name
+            if let part {
+                _ = beginLinkedStamp(fragment, partID: part, name: name)
+            } else {
+                pendingPaste = fragment
+                stampName = name
+            }
             updatePasteAnchor(anchor)
         }
         return result
@@ -1256,6 +1354,9 @@ extension EditorModel {
     func commitPaste() -> Bool {
         guard let fragment = pendingPaste, let anchor = pasteAnchor, let index = visibleActiveLayerIndex,
               fits(fragment, at: anchor) else { return false }
+        if let id = linkedStampPartID, let name = stampName {
+            return keepingStamp { placeLinkedStamp(fragment, at: anchor, partID: id, name: name) }
+        }
         var changes: [Cell: Delta] = [:]
         changes.reserveCapacity(fragment.cells.count)
         for (offset, ink) in fragment.cells {
@@ -1265,5 +1366,431 @@ extension EditorModel {
             cancelPaste()
             return commit(changes, in: index, selecting: Set(changes.keys))
         }
+    }
+}
+
+extension EditorModel {
+    var activeSceneObject: SceneObject? { sceneLayout.objects.first { $0.layerIDs.contains(activeLayerID) } }
+
+    func geometryVersion(for layerID: UUID) -> UUID {
+        layers.first { $0.id == layerID }?.geometryID ?? layerID
+    }
+
+    func definitionVersion(for id: UUID) -> UUID { definitionVersions[id] ?? id }
+
+    private var sceneState: SceneState {
+        SceneState(layout: sceneLayout, layers: layers, active: activeLayerID,
+                   selection: selection, versions: definitionVersions)
+    }
+
+    private func restoreScene(_ state: SceneState) {
+        changingScene = true
+        defer { changingScene = false }
+        sceneLayout = state.layout
+        definitionVersions = state.versions
+        layers = state.layers
+        activeLayerID = state.active
+        if let isolatedLayerID, !layers.contains(where: { $0.id == isolatedLayerID }) { self.isolatedLayerID = nil }
+        selection = tool == .select ? state.selection : []
+    }
+
+    private func changeScene(_ edit: () -> Void) {
+        endStroke()
+        let before = sceneState
+        changingScene = true
+        edit()
+        changingScene = false
+        revision &+= 1
+        record(.scene(before, sceneState))
+    }
+
+    private func members(of object: SceneObject) -> [VoxelLayer] {
+        object.layerIDs.compactMap { id in layers.first { $0.id == id } }
+    }
+
+    private func peers(of object: SceneObject) -> [SceneObject] {
+        sceneLayout.objects.filter { $0.definitionID == object.definitionID && $0.id != object.id }
+    }
+
+    private func markChangedCells(_ cells: @autoclosure () -> Set<Cell>, in index: Int) {
+        guard let source = sceneLayout.objects.first(where: { $0.layerIDs.contains(layers[index].id) }),
+              sceneLayout.objects.contains(where: { $0.id != source.id && $0.definitionID == source.definitionID })
+        else { return }
+        changedMemberCells = cells()
+    }
+
+    private func synchronizeDefinitions(after previous: [VoxelLayer]) {
+        let touched = changedMemberCells
+        changedMemberCells = nil
+        guard !sceneLayout.objects.isEmpty else { return }
+        let previousIDs = Dictionary(uniqueKeysWithValues: previous.map { ($0.id, $0.geometryID) })
+        let wasChangingScene = changingScene
+        changingScene = true
+        defer { changingScene = wasChangingScene }
+        for object in sceneLayout.objects {
+            for (slot, id) in object.layerIDs.enumerated() {
+                guard let layer = layers.first(where: { $0.id == id }), let old = previousIDs[id],
+                      layer.geometryID != old else { continue }
+                definitionVersions[object.definitionID] = UUID()
+                let others = peers(of: object)
+                guard !others.isEmpty else { return }
+                var updated = layers
+                for peer in others {
+                    guard let index = updated.firstIndex(where: { $0.id == peer.layerIDs[slot] }) else { continue }
+                    if let touched {
+                        var cells = updated[index].cells
+                        for source in touched {
+                            let destination = peer.transform.apply(object.transform.unapply(source))
+                            cells[destination] = layer.cells[source]
+                        }
+                        updated[index].cells = cells
+                    } else {
+                        updated[index].cells = placed(layer.cells, from: object.transform, to: peer.transform)
+                    }
+                }
+                layers = updated
+                // A voxel operation edits exactly one member. All other changed layers are its mirrors.
+                return
+            }
+        }
+    }
+
+    private func placed(_ cells: [Cell: Ink], from: VoxelTransform, to: VoxelTransform) -> [Cell: Ink] {
+        if from == to { return cells }
+        var result: [Cell: Ink] = [:]
+        result.reserveCapacity(cells.count)
+        for (cell, ink) in cells { result[to.apply(from.unapply(cell))] = ink }
+        return result
+    }
+
+    /// A shared edit must be valid at every placement before any member is changed.
+    private func allowsLinkedEdit(in index: Int, additions: @autoclosure () -> [Cell], removals: @autoclosure () -> Set<Cell> = []) -> Bool {
+        let id = layers[index].id
+        guard let object = sceneLayout.objects.first(where: { $0.layerIDs.contains(id) }),
+              let slot = object.layerIDs.firstIndex(of: id) else { return true }
+        let others = peers(of: object)
+        guard !others.isEmpty else { return true }
+        let members = [object] + others
+        let slots = Dictionary(uniqueKeysWithValues: members.map { ($0.layerIDs[slot], $0.transform) })
+        guard !layers.contains(where: { slots[$0.id] != nil && $0.isLocked }) else { return false }
+        let local = additions().map(object.transform.unapply)
+        if local.isEmpty { return true }
+        let removed = Set(removals().map(object.transform.unapply))
+        var newOccupancy = Set<Cell>()
+        for member in members {
+            let memberID = member.layerIDs[slot]
+            for cell in local {
+                let world = member.transform.apply(cell)
+                guard world.inBounds, newOccupancy.insert(world).inserted else { return false }
+                for layer in layers where layer.isVisible && layer.id != memberID && layer.cells[world] != nil {
+                    guard let transform = slots[layer.id], removed.contains(transform.unapply(world)) else { return false }
+                }
+            }
+        }
+        return true
+    }
+
+    func selectObject(_ id: UUID) {
+        guard let object = sceneLayout.objects.first(where: { $0.id == id }) else { return }
+        if !object.layerIDs.contains(activeLayerID) {
+            activeLayerID = members(of: object).first { $0.isVisible && !$0.isLocked }?.id ?? object.layerIDs[0]
+        }
+    }
+
+    @discardableResult
+    func createObjectFromSelection(name: String) -> Bool {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, pendingPaste == nil, tool == .select, let index = visibleActiveLayerIndex,
+              layers.count < Self.layerLimit, let box = BrushBox(enclosing: selection),
+              selection.allSatisfy({ ownsVisibleCell($0, in: index) }),
+              allowsLinkedEdit(in: index, additions: []) else { return false }
+        let group = activeSceneObject?.groupID
+        let source = layers[index]
+        let selected = selection
+        let cells = Dictionary(uniqueKeysWithValues: selected.map { ($0, source.cells[$0]!) })
+        let member = VoxelLayer(name: source.name, cells: cells)
+        let object = SceneObject(name: name, groupID: group, layerIDs: [member.id],
+                                 transform: VoxelTransform(axes: [1, 2, 3], offset: box.min))
+        changeScene {
+            let old = layers
+            var remainder = source.cells
+            for cell in selected { remainder.removeValue(forKey: cell) }
+            markChangedCells(selected, in: index)
+            layers[index].cells = remainder
+            synchronizeDefinitions(after: old)
+            layers.insert(member, at: index + 1)
+            sceneLayout.objects.append(object)
+            activeLayerID = member.id
+            selection = selected
+        }
+        return true
+    }
+
+    private func canPlace(_ source: SceneObject, at transform: VoxelTransform, ignoring: Set<UUID>) -> Bool {
+        guard transform.isValid else { return false }
+        let occupied = layers.filter { $0.isVisible && !ignoring.contains($0.id) }
+        for layer in members(of: source) {
+            for cell in layer.cells.keys {
+                let destination = transform.apply(source.transform.unapply(cell))
+                guard destination.inBounds, !occupied.contains(where: { $0.cells[destination] != nil }) else { return false }
+            }
+        }
+        return true
+    }
+
+    private func setTransform(_ id: UUID, by operation: VoxelTransform) -> Bool {
+        guard let i = sceneLayout.objects.firstIndex(where: { $0.id == id }) else { return false }
+        let object = sceneLayout.objects[i], transform = object.transform.followed(by: operation)
+        guard transform != object.transform, !members(of: object).contains(where: { $0.isLocked }),
+              canPlace(object, at: transform, ignoring: Set(object.layerIDs)) else { return false }
+        endStroke()
+        let oldSelection = selection
+        applyTransform(at: i, to: transform)
+        if object.layerIDs.contains(activeLayerID) {
+            selection = Set(oldSelection.map(operation.apply))
+            pruneSelection()
+        }
+        record(.objectPose(id, before: object.transform, after: transform, selectionBefore: oldSelection, selectionAfter: selection))
+        return true
+    }
+
+    private func applyTransform(at index: Int, to transform: VoxelTransform) {
+        let object = sceneLayout.objects[index]
+        changingScene = true
+        defer { changingScene = false }
+        sceneLayout.objects[index].transform = transform
+        var updated = layers
+        for i in updated.indices where object.layerIDs.contains(updated[i].id) {
+            updated[i].cells = placed(updated[i].cells, from: object.transform, to: transform)
+        }
+        layers = updated
+    }
+
+    @discardableResult
+    func moveObject(_ id: UUID, by delta: Cell) -> Bool {
+        guard delta.isSceneCoordinate else { return false }
+        return setTransform(id, by: VoxelTransform(axes: [1, 2, 3], offset: delta))
+    }
+
+    @discardableResult
+    func rotateObject(_ id: UUID, around axis: VoxelAxis, pivot: Cell) -> Bool {
+        guard pivot.inBounds else { return false }
+        return setTransform(id, by: .quarterTurn(around: axis, pivot: pivot))
+    }
+
+    /// Inserts one placement, preserving the order and materials of the source member layers.
+    private func insertCopy(of source: SceneObject, at transform: VoxelTransform, name: String, linked: Bool) {
+        let copies = members(of: source).map { layer in
+            VoxelLayer(name: layer.name, isVisible: layer.isVisible, isLocked: layer.isLocked,
+                       cells: placed(layer.cells, from: source.transform, to: transform))
+        }
+        layers.append(contentsOf: copies)
+        sceneLayout.objects.append(SceneObject(name: name, groupID: source.groupID,
+            definitionID: linked ? source.definitionID : UUID(), layerIDs: copies.map(\.id),
+            transform: transform, libraryPartID: linked ? source.libraryPartID : nil))
+        activeLayerID = copies.first(where: { $0.isVisible && !$0.isLocked })?.id ?? copies[0].id
+    }
+
+    @discardableResult
+    func duplicateObject(_ id: UUID, linked: Bool) -> Bool {
+        guard let source = sceneLayout.objects.first(where: { $0.id == id }),
+              layers.count + source.layerIDs.count <= Self.layerLimit else { return false }
+        let cells = Set(members(of: source).flatMap { $0.cells.keys })
+        let size = BrushBox(enclosing: cells)?.size ?? Cell(1, 1, 1)
+        let steps = [Cell(size.x, 0, 0), Cell(0, 0, size.z), Cell(-size.x, 0, 0), Cell(0, 0, -size.z),
+                     Cell(0, size.y, 0), Cell(0, -size.y, 0)]
+        for distance in 1..<Cell.gridSize {
+            for step in steps {
+                var transform = source.transform
+                transform.offset = transform.offset.offset(step, by: distance)
+                guard canPlace(source, at: transform, ignoring: []) else { continue }
+                changeScene { insertCopy(of: source, at: transform, name: source.name + " Copy", linked: linked) }
+                return true
+            }
+        }
+        return false
+    }
+
+    func canMakeObjectUnique(_ id: UUID) -> Bool {
+        guard let object = sceneLayout.objects.first(where: { $0.id == id }) else { return false }
+        return object.libraryPartID != nil || !peers(of: object).isEmpty
+    }
+
+    @discardableResult
+    func makeObjectUnique(_ id: UUID) -> Bool {
+        guard canMakeObjectUnique(id), let i = sceneLayout.objects.firstIndex(where: { $0.id == id }) else { return false }
+        changeScene {
+            sceneLayout.objects[i].definitionID = UUID()
+            sceneLayout.objects[i].libraryPartID = nil
+        }
+        return true
+    }
+
+    @discardableResult
+    func addObjectLayer(to id: UUID) -> Bool {
+        guard let object = sceneLayout.objects.first(where: { $0.id == id }) else { return false }
+        let owners = [object] + peers(of: object)
+        guard layers.count + owners.count <= Self.layerLimit else { return false }
+        changeScene {
+            for owner in owners {
+                let layer = VoxelLayer(name: "Layer \(owner.layerIDs.count + 1)")
+                let insertion = layers.firstIndex { $0.id == owner.layerIDs.last }! + 1
+                layers.insert(layer, at: insertion)
+                let index = sceneLayout.objects.firstIndex { $0.id == owner.id }!
+                sceneLayout.objects[index].layerIDs.append(layer.id)
+                if owner.id == id { activeLayerID = layer.id }
+            }
+            definitionVersions[object.definitionID] = UUID()
+        }
+        return true
+    }
+
+    private func removeObjectLayer(from object: SceneObject) {
+        guard let slot = object.layerIDs.firstIndex(of: activeLayerID) else { return }
+        // Deleting the final member removes just this placement of its definition.
+        if object.layerIDs.count == 1 { _ = removeObject(object.id); return }
+        let owners = [object] + peers(of: object)
+        let ids = Set(owners.map { $0.layerIDs[slot] })
+        guard !layers.contains(where: { ids.contains($0.id) && $0.isLocked }) else { return }
+        changeScene {
+            for owner in owners {
+                let i = sceneLayout.objects.firstIndex { $0.id == owner.id }!
+                sceneLayout.objects[i].layerIDs.remove(at: slot)
+            }
+            layers.removeAll { ids.contains($0.id) }
+            activeLayerID = object.layerIDs.first { !ids.contains($0) }!
+            definitionVersions[object.definitionID] = UUID()
+        }
+    }
+
+    @discardableResult
+    func removeObject(_ id: UUID) -> Bool {
+        guard let index = sceneLayout.objects.firstIndex(where: { $0.id == id }) else { return false }
+        let members = Set(sceneLayout.objects[index].layerIDs)
+        guard !layers.contains(where: { members.contains($0.id) && $0.isLocked }) else { return false }
+        changeScene {
+            sceneLayout.objects.remove(at: index)
+            layers.removeAll { members.contains($0.id) }
+            if layers.isEmpty { layers.append(VoxelLayer(name: "Layer 1")) }
+            if members.contains(activeLayerID) { activeLayerID = layers.last!.id }
+        }
+        return true
+    }
+
+    @discardableResult
+    func ungroup(_ id: UUID) -> Bool {
+        guard let index = sceneLayout.groups.firstIndex(where: { $0.id == id }) else { return false }
+        let parent = sceneLayout.groups[index].parentID
+        changeScene {
+            for i in sceneLayout.groups.indices where sceneLayout.groups[i].parentID == id {
+                sceneLayout.groups[i].parentID = parent
+            }
+            for i in sceneLayout.objects.indices where sceneLayout.objects[i].groupID == id {
+                sceneLayout.objects[i].groupID = parent
+            }
+            sceneLayout.groups.remove(at: index)
+        }
+        return true
+    }
+
+    @discardableResult
+    func createGroup(name: String, parentID: UUID? = nil) -> UUID? {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, sceneLayout.groups.count < 4096,
+              parentID.map({ id in sceneLayout.groups.contains { $0.id == id } }) ?? true else { return nil }
+        let group = SceneGroup(name: name, parentID: parentID)
+        changeScene { sceneLayout.groups.append(group) }
+        return group.id
+    }
+
+    @discardableResult
+    func setObjectGroup(_ id: UUID, to group: UUID?) -> Bool {
+        guard let i = sceneLayout.objects.firstIndex(where: { $0.id == id }), sceneLayout.objects[i].groupID != group,
+              group.map({ id in sceneLayout.groups.contains { $0.id == id } }) ?? true else { return false }
+        changeScene { sceneLayout.objects[i].groupID = group }
+        return true
+    }
+
+    @discardableResult
+    func setGroupParent(_ id: UUID, to parent: UUID?) -> Bool {
+        guard let i = sceneLayout.groups.firstIndex(where: { $0.id == id }), sceneLayout.groups[i].parentID != parent else { return false }
+        var next = parent
+        while let current = next {
+            guard current != id, let group = sceneLayout.groups.first(where: { $0.id == current }) else { return false }
+            next = group.parentID
+        }
+        changeScene { sceneLayout.groups[i].parentID = parent }
+        return true
+    }
+
+    @discardableResult
+    func renameObject(_ id: UUID, to name: String) -> Bool {
+        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, let i = sceneLayout.objects.firstIndex(where: { $0.id == id }),
+              sceneLayout.objects[i].name != title else { return false }
+        changeScene { sceneLayout.objects[i].name = title }
+        return true
+    }
+
+    @discardableResult
+    func renameGroup(_ id: UUID, to name: String) -> Bool {
+        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, let i = sceneLayout.groups.firstIndex(where: { $0.id == id }),
+              sceneLayout.groups[i].name != title else { return false }
+        changeScene { sceneLayout.groups[i].name = title }
+        return true
+    }
+}
+
+extension EditorModel {
+    private func libraryObject(for partID: UUID) -> SceneObject? {
+        sceneLayout.objects.first { $0.libraryPartID == partID }
+    }
+
+    private func libraryGeometry(of object: SceneObject) -> (cells: [Cell: Ink], min: Cell)? {
+        var local: [Cell: Ink] = [:]
+        for layer in members(of: object) {
+            for (cell, ink) in layer.cells { local[object.transform.unapply(cell)] = ink }
+        }
+        guard let box = BrushBox(enclosing: Set(local.keys)) else { return nil }
+        return (local, box.min)
+    }
+
+    @discardableResult
+    func beginLinkedStamp(_ fragment: VoxelFragment, partID: UUID, name: String) -> Bool {
+        let preview: VoxelFragment
+        if let source = libraryObject(for: partID) {
+            guard let geometry = libraryGeometry(of: source) else { return false }
+            let low = geometry.min
+            let cells = Dictionary(uniqueKeysWithValues: geometry.cells.map { ($0.key.offset(-low.x, -low.y, -low.z), $0.value) })
+            guard let updated = VoxelFragment(origin: Cell(-128, 0, -128), cells: cells) else { return false }
+            preview = updated
+        } else {
+            preview = fragment
+        }
+        guard beginPaste(preview, stampName: name) else { return false }
+        linkedStampPartID = partID
+        return true
+    }
+
+    private func placeLinkedStamp(_ fragment: VoxelFragment, at anchor: Cell, partID: UUID, name: String) -> Bool {
+        if let source = libraryObject(for: partID) {
+            guard layers.count + source.layerIDs.count <= Self.layerLimit, let local = libraryGeometry(of: source) else { return false }
+            let transform = VoxelTransform(axes: [1, 2, 3], offset: anchor.offset(-local.min.x, -local.min.y, -local.min.z))
+            guard canPlace(source, at: transform, ignoring: []) else { return false }
+            changeScene { insertCopy(of: source, at: transform, name: name, linked: true) }
+        } else {
+            guard layers.count < Self.layerLimit else { return false }
+            let cells = Dictionary(uniqueKeysWithValues: fragment.cells.map { (anchor.offset($0.key), $0.value) })
+            let layer = VoxelLayer(name: name, cells: cells)
+            let object = SceneObject(name: name, layerIDs: [layer.id],
+                                     transform: VoxelTransform(axes: [1, 2, 3], offset: anchor), libraryPartID: partID)
+            changeScene {
+                layers.append(layer)
+                sceneLayout.objects.append(object)
+                activeLayerID = layer.id
+            }
+        }
+        return true
     }
 }
