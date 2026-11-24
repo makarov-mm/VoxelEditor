@@ -204,7 +204,7 @@ struct Inspector: View {
 
     @ViewBuilder private var colorActions: some View {
         Button("Select by Color") { ui.selectByColor(in: model) }
-            .disabled(activeLayer.map { !$0.isVisible || $0.cells.isEmpty } ?? true)
+            .disabled(model.editableActiveLayer?.cells.isEmpty != false)
             .help("Select editable voxels of the active color on this layer")
         Button("Recolor Selection") { ui.recolorSelection(in: model) }
             .disabled(model.selection.isEmpty)
@@ -236,10 +236,15 @@ struct Inspector: View {
                     .foregroundStyle(StudioStyle.muted).padding(.horizontal, 5).padding(.vertical, 1)
                     .background(Capsule().fill(StudioStyle.rail)).overlay(Capsule().stroke(StudioStyle.rule))
                 Spacer()
+                Button("Solo") { model.toggleIsolation(model.activeLayerID) }
+                    .buttonStyle(StudioButtonStyle(selected: model.isolatedLayerID != nil))
+                    .font(.system(size: 11, weight: .medium))
+                    .help(model.isolatedLayerID == nil ? "Show only the active layer" : "Exit layer isolation")
                 IconControl(symbol: "minus", hint: "Delete active layer", size: 23, font: 11) {
                     askingToDelete = true
-                }.disabled(model.layers.count <= 1)
+                }.disabled(model.layers.count <= 1 || activeLayer?.isLocked == true)
                 IconControl(symbol: "plus", hint: "New layer", size: 23, font: 11) { model.addLayer() }
+                    .disabled(model.layers.count >= EditorModel.layerLimit)
             }.padding(.horizontal, 8).padding(.bottom, 4)
             ForEach(model.layers.reversed()) { layer in
                 let selected = layer.id == model.activeLayerID
@@ -253,22 +258,29 @@ struct Inspector: View {
                             Spacer(minLength: 0)
                         }.padding(.leading, 10).frame(maxWidth: .infinity, minHeight: 30).contentShape(Rectangle())
                     }.buttonStyle(.plain).help("Select “\(layer.name)”")
+                    IconControl(symbol: layer.isLocked ? "lock.fill" : "lock.open",
+                                hint: layer.isLocked ? "Unlock layer" : "Lock layer", size: 23, font: 11,
+                                selected: layer.isLocked) { model.toggleLayerLock(layer.id) }
                     IconControl(symbol: layer.isVisible ? "eye" : "eye.slash",
                                 hint: layer.isVisible ? "Hide layer" : "Show layer", size: 28, font: 12) {
                         model.toggleLayer(layer.id)
                     }.padding(.trailing, 4)
-                }.foregroundStyle(StudioStyle.ink).opacity(layer.isVisible ? 1 : 0.55)
+                }.foregroundStyle(StudioStyle.ink).opacity(model.isLayerShownInEditor(layer) ? 1 : 0.55)
                     .background(RoundedRectangle(cornerRadius: 6).fill(selected ? StudioStyle.pale : .clear))
                     .contextMenu {
                         Button("Rename…") {
                             newName = layer.name
                             renamedLayer = layer.id
+                        }.disabled(layer.isLocked)
+                        Button(layer.isLocked ? "Unlock Layer" : "Lock Layer") { model.toggleLayerLock(layer.id) }
+                        Button(model.isolatedLayerID == layer.id ? "Exit Isolation" : "Isolate Layer") {
+                            model.toggleIsolation(layer.id)
                         }
                         Button(layer.isVisible ? "Hide" : "Show") { model.toggleLayer(layer.id) }
                         Button("Delete…", role: .destructive) {
                             model.activeLayerID = layer.id
                             askingToDelete = true
-                        }.disabled(model.layers.count <= 1)
+                        }.disabled(model.layers.count <= 1 || layer.isLocked)
                     }
             }
         }.padding(.horizontal, 10).padding(.vertical, 13)

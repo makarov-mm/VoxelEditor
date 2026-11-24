@@ -314,7 +314,7 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
             return editingCanvas && ui.canPaste(into: model)
         case #selector(selectAll(_:)), #selector(selectByColor):
             return editingCanvas && model.pendingPaste == nil &&
-                model.layers.contains { $0.id == model.activeLayerID && $0.isVisible && !$0.cells.isEmpty }
+                model.editableActiveLayer?.cells.isEmpty == false
         case #selector(cut(_:)), #selector(copy(_:)), #selector(deleteVoxels),
              #selector(deselectVoxels), #selector(duplicateSelection), #selector(recolorSelection), #selector(rotateSelection(_:)):
             return editingCanvas && model.pendingPaste == nil && !model.selection.isEmpty

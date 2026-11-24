@@ -13,7 +13,7 @@ final class StudioUI: ObservableObject {
     @Published var selectionNotice: String?
 
     func canPaste(into model: EditorModel) -> Bool {
-        model.pendingPaste == nil && model.layers.contains { $0.id == model.activeLayerID && $0.isVisible } &&
+        model.pendingPaste == nil && model.editableActiveLayer != nil &&
             pasteboard.availableType(from: [Self.fragmentType]) != nil
     }
 
@@ -52,7 +52,7 @@ final class StudioUI: ObservableObject {
         }
         do {
             let fragment = try VoxelFragment.decode(data)
-            selectionNotice = model.beginPaste(fragment) ? nil : "Choose a visible layer to paste into."
+            selectionNotice = model.beginPaste(fragment) ? nil : "Choose a visible, unlocked layer to paste into."
         } catch {
             selectionNotice = error.localizedDescription
         }

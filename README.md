@@ -41,6 +41,8 @@ The editor opens with **Northern Lighthouse**, a five-layer scene you can edit i
 
 Choose the active layer in the inspector before painting or erasing. The eyedropper can sample any visible layer.
 
+Click the lock in a layer row to protect its voxels, name, and deletion. Locks are saved in Forma projects. Click **Solo** to work on the active layer in isolation. Click it again to restore the previous view. PNG captures the isolated view, while model exports keep the scene’s regular layer visibility.
+
 ## Mirror strokes
 
 With **Add**, **Paint**, or **Erase** active, turn on **Mirror X**, **Mirror Z**, or both in the inspector. The brush preview shows where the stroke will land. Each axis reflects across the middle of the grid, between cells −1 and 0. A single undo reverses the entire stroke, including its reflections.

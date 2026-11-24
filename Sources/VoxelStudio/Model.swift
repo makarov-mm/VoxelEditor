@@ -74,6 +74,7 @@ struct VoxelLayer: Identifiable {
     var id = UUID()
     var name: String
     var isVisible = true
+    var isLocked = false
     var cells: [Cell: Ink] = [:]
 }
 
@@ -104,6 +105,7 @@ private struct ProjectFile: Codable {
         var id: UUID
         var name: String
         var isVisible: Bool
+        var isLocked: Bool?
         var voxels: [Voxel]
     }
 
@@ -134,7 +136,8 @@ private struct ProjectFile: Codable {
                     throw ProjectError.invalidProject
                 }
             }
-            return VoxelLayer(id: source.id, name: source.name, isVisible: source.isVisible, cells: cells)
+            return VoxelLayer(id: source.id, name: source.name, isVisible: source.isVisible,
+                              isLocked: source.isLocked ?? false, cells: cells)
         }
     }
 }
@@ -164,7 +167,13 @@ final class EditorModel: ObservableObject {
             if oldValue != activeLayerID {
                 endStroke()
                 clearSelection()
+                if isolatedLayerID != nil { isolatedLayerID = nil }
             }
+        }
+    }
+    @Published private(set) var isolatedLayerID: UUID? {
+        didSet {
+            if oldValue != isolatedLayerID { workingViewDidChange() }
         }
     }
     @Published var tool: EditTool = .add {
@@ -187,13 +196,13 @@ final class EditorModel: ObservableObject {
     @Published var brushSize = 1
     @Published var shapeDepth = 1
     @Published var sliceEnabled = false {
-        didSet { if oldValue != sliceEnabled { sliceDidChange() } }
+        didSet { if oldValue != sliceEnabled { workingViewDidChange() } }
     }
     @Published var sliceLevel = 0 {
         didSet {
             let clamped = min(Cell.verticalRange.upperBound, max(Cell.verticalRange.lowerBound, sliceLevel))
             if sliceLevel != clamped { sliceLevel = clamped }
-            if oldValue != sliceLevel && sliceEnabled { sliceDidChange() }
+            if oldValue != sliceLevel && sliceEnabled { workingViewDidChange() }
         }
     }
     @Published private(set) var title = "Northern Lighthouse"
@@ -228,6 +237,7 @@ final class EditorModel: ObservableObject {
         case move(layer: UUID, source: Set<Cell>, delta: Cell)
         case layer(VoxelLayer, index: Int, inserted: Bool, oldActive: UUID, newActive: UUID)
         case visibility(UUID, Bool)
+        case lock(UUID, Bool)
         case name(UUID, before: String, after: String)
         case palette(Ink)
     }
@@ -254,10 +264,20 @@ final class EditorModel: ObservableObject {
         return result
     }
 
+    private var editingCells: [Cell: Ink] {
+        if let isolatedLayerID { return layers.first { $0.id == isolatedLayerID }?.cells ?? [:] }
+        return visibleCells
+    }
+
+    func isLayerShownInEditor(_ layer: VoxelLayer) -> Bool {
+        if let isolatedLayerID { return isolatedLayerID == layer.id }
+        return layer.isVisible
+    }
+
     var viewportCells: [Cell: Ink] {
-        guard sliceEnabled else { return visibleCells }
+        guard sliceEnabled else { return editingCells }
         if let clipped { return clipped }
-        let result = visibleCells.filter { $0.key.y <= sliceLevel }
+        let result = editingCells.filter { $0.key.y <= sliceLevel }
         clipped = result
         return result
     }
@@ -266,7 +286,7 @@ final class EditorModel: ObservableObject {
         Cell.verticalRange.contains(y) && (!sliceEnabled || y <= sliceLevel)
     }
 
-    private func sliceDidChange() {
+    private func workingViewDidChange() {
         cancelPaste()
         endStroke()
         clipped = nil
@@ -344,7 +364,7 @@ final class EditorModel: ObservableObject {
     func apply(hit: Cell?, adjacent: Cell?) {
         guard [.add, .paint, .erase, .pick].contains(tool) else { return }
         if tool == .pick {
-            if let hit, isEditableHeight(hit.y), let color = visibleCells[hit] { ink = color }
+            if let hit, isEditableHeight(hit.y), let color = editingCells[hit] { ink = color }
             return
         }
         let boxes = brushBoxes(hit: hit, adjacent: adjacent)
@@ -355,7 +375,7 @@ final class EditorModel: ObservableObject {
         if singleClick { beginStroke() }
         defer { if singleClick { endStroke() } }
 
-        let visible = visibleCells
+        let visible = editingCells
         var edits: [Cell: Delta] = [:]
         for bounds in boxes {
             for x in bounds.min.x...bounds.max.x {
@@ -387,12 +407,16 @@ final class EditorModel: ObservableObject {
     }
 
     private var visibleActiveLayerIndex: Int? {
-        layers.firstIndex { $0.id == activeLayerID && $0.isVisible }
+        layers.firstIndex { $0.id == activeLayerID && !$0.isLocked && isLayerShownInEditor($0) }
+    }
+
+    var editableActiveLayer: VoxelLayer? {
+        visibleActiveLayerIndex.map { layers[$0] }
     }
 
     private func ownsVisibleCell(_ cell: Cell, in index: Int) -> Bool {
         isEditableHeight(cell.y) && layers[index].cells[cell] != nil && !layers.dropFirst(index + 1).contains {
-            $0.isVisible && $0.cells[cell] != nil
+            isLayerShownInEditor($0) && $0.cells[cell] != nil
         }
     }
 
@@ -458,7 +482,7 @@ final class EditorModel: ObservableObject {
         for (cell, ink) in layers[index].cells where isEditableHeight(cell.y) && matches(ink) {
             visible.insert(cell)
         }
-        for layer in layers.dropFirst(index + 1) where layer.isVisible {
+        for layer in layers.dropFirst(index + 1) where isLayerShownInEditor(layer) {
             if visible.isEmpty { break }
             visible.subtract(layer.cells.keys)
         }
@@ -491,13 +515,13 @@ final class EditorModel: ObservableObject {
               delta != Cell(0, 0, 0), span.contains(delta.x), span.contains(delta.y), span.contains(delta.z) else {
             return false
         }
-        let occupied = visibleCells
+        let occupied = editingCells
         for cell in selection {
             let to = cell.offset(delta.x, delta.y, delta.z)
             guard to.inBounds, isEditableHeight(to.y) else { return false }
             if selection.contains(to) {
                 // An overlapping source will be vacated, but other visible layers must remain clear.
-                if layers.contains(where: { $0.id != activeLayerID && $0.isVisible && $0.cells[to] != nil }) {
+                if layers.contains(where: { $0.id != activeLayerID && isLayerShownInEditor($0) && $0.cells[to] != nil }) {
                     return false
                 }
             } else if occupied[to] != nil {
@@ -548,7 +572,7 @@ final class EditorModel: ObservableObject {
 
     func removeActiveLayer() {
         endStroke()
-        guard layers.count > 1, let index = layers.firstIndex(where: { $0.id == activeLayerID }) else { return }
+        guard layers.count > 1, let index = layers.firstIndex(where: { $0.id == activeLayerID && !$0.isLocked }) else { return }
         let removed = layers.remove(at: index)
         activeLayerID = layers[min(index, layers.count - 1)].id
         record(.layer(removed, index: index, inserted: false, oldActive: removed.id, newActive: activeLayerID))
@@ -556,7 +580,7 @@ final class EditorModel: ObservableObject {
 
     func renameLayer(_ id: UUID, to name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let index = layers.firstIndex(where: { $0.id == id }),
+        guard !trimmed.isEmpty, let index = layers.firstIndex(where: { $0.id == id && !$0.isLocked }),
               layers[index].name != trimmed else { return }
         endStroke()
         let previous = layers[index].name
@@ -567,9 +591,28 @@ final class EditorModel: ObservableObject {
     func toggleLayer(_ id: UUID) {
         endStroke()
         guard let index = layers.firstIndex(where: { $0.id == id }) else { return }
+        if isolatedLayerID != nil { isolatedLayerID = nil }
         layers[index].isVisible.toggle()
         pruneSelection()
         record(.visibility(id, layers[index].isVisible))
+    }
+
+    func toggleLayerLock(_ id: UUID) {
+        guard let index = layers.firstIndex(where: { $0.id == id }) else { return }
+        endStroke()
+        layers[index].isLocked.toggle()
+        pruneSelection()
+        record(.lock(id, layers[index].isLocked))
+    }
+
+    func toggleIsolation(_ id: UUID) {
+        guard layers.contains(where: { $0.id == id }) else { return }
+        if isolatedLayerID == id {
+            isolatedLayerID = nil
+        } else {
+            activeLayerID = id
+            isolatedLayerID = id
+        }
     }
 
     func addPaletteColor(_ ink: Ink) {
@@ -639,6 +682,10 @@ final class EditorModel: ObservableObject {
             if let i = layers.firstIndex(where: { $0.id == id }) {
                 layers[i].isVisible = forward ? visible : !visible
             }
+        case let .lock(id, locked):
+            if let i = layers.firstIndex(where: { $0.id == id }) {
+                layers[i].isLocked = forward ? locked : !locked
+            }
         case let .name(id, before, after):
             if let index = layers.firstIndex(where: { $0.id == id }) {
                 layers[index].name = forward ? after : before
@@ -657,6 +704,7 @@ final class EditorModel: ObservableObject {
                                url: URL?, origin: Cell? = nil) {
         stroke = nil
         clearSelection()
+        isolatedLayerID = nil
         mirrorX = false
         mirrorZ = false
         sliceEnabled = false
@@ -830,7 +878,8 @@ final class EditorModel: ObservableObject {
             version: ProjectFile.currentVersion, title: name, palette: palette, activeLayerID: activeLayerID,
             layers: layers.map { layer in
                 let voxels = layer.cells.map { ProjectFile.Voxel(cell: $0.key, ink: $0.value) }
-                return ProjectFile.Layer(id: layer.id, name: layer.name, isVisible: layer.isVisible, voxels: voxels)
+                return ProjectFile.Layer(id: layer.id, name: layer.name, isVisible: layer.isVisible,
+                                         isLocked: layer.isLocked ? true : nil, voxels: voxels)
             }, voxOrigin: voxOrigin
         )
         let data = try JSONEncoder().encode(file)
@@ -932,7 +981,7 @@ extension EditorModel {
         let size = bounds.size
         let offsets = [Cell(size.x, 0, 0), Cell(-size.x, 0, 0), Cell(0, 0, size.z),
                        Cell(0, 0, -size.z), Cell(0, size.y, 0), Cell(0, -size.y, 0)]
-        let occupied = visibleCells
+        let occupied = editingCells
         for offset in offsets {
             guard bounds.min.offset(offset).inBounds, bounds.max.offset(offset).inBounds,
                   isEditableHeight(bounds.max.y + offset.y),
@@ -951,8 +1000,8 @@ extension EditorModel {
     func rotateSelection(around axis: VoxelAxis) -> Bool {
         guard pendingPaste == nil, tool == .select, let index = visibleActiveLayerIndex,
               let bounds = BrushBox(enclosing: selection) else { return false }
-        let occupied = visibleCells
-        let otherLayers = layers.filter { $0.isVisible && $0.id != activeLayerID }
+        let occupied = editingCells
+        let otherLayers = layers.filter { isLayerShownInEditor($0) && $0.id != activeLayerID }
         var destinations: [Cell: Ink] = [:]
         destinations.reserveCapacity(selection.count)
         for source in selection {
@@ -984,7 +1033,7 @@ extension EditorModel {
         guard let index = visibleActiveLayerIndex,
               let shape = VoxelShape(tool: tool, from: from, to: to, normal: normal),
               shape.fitsOperationLimit, isEditableHeight(shape.bounds.max.y) else { return false }
-        let occupied = visibleCells
+        let occupied = editingCells
         var cells = Set<Cell>()
         shape.forEachCell { cell in
             if occupied[cell] == nil { cells.insert(cell) }
@@ -1049,7 +1098,7 @@ extension EditorModel {
         guard let index = visibleActiveLayerIndex, let first = face.first,
               Cell.neighbors.contains(normal), (1..<Cell.gridSize).contains(depth),
               face.count <= Self.maxShapeCells / depth else { return false }
-        let occupied = visibleCells
+        let occupied = editingCells
         for source in face {
             guard ownsVisibleCell(source, in: index),
                   (normal.x == 0 || source.x == first.x), (normal.y == 0 || source.y == first.y),
@@ -1134,7 +1183,7 @@ extension EditorModel {
         guard anchor.inBounds, visibleActiveLayerIndex != nil else { return false }
         let last = anchor.offset(fragment.size).offset(-1, -1, -1)
         guard last.inBounds, isEditableHeight(last.y) else { return false }
-        let occupied = visibleCells
+        let occupied = editingCells
         // On a sparse destination, hover checks should scale with the smaller of the two collections.
         if occupied.count < fragment.cells.count {
             return occupied.keys.allSatisfy { fragment.cells[$0.offset(-anchor.x, -anchor.y, -anchor.z)] == nil }

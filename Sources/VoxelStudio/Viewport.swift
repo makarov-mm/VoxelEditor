@@ -513,6 +513,7 @@ final class StudioViewportSurface: NSView {
     fileprivate var hoverFaces: [VoxelFace] {
         if previewingPaste { return [] }
         if gesture == .modeling { return modelingFaces }
+        guard model.tool == .pick || model.editableActiveLayer != nil else { return [] }
         guard let point = hoverPoint, gesture != .orbit, gesture != .pan, gesture != .select else { return [] }
         let pick = pick(at: point, using: strokeVoxels)
         let color: V4
@@ -696,7 +697,7 @@ final class StudioViewportSurface: NSView {
 
     private func beginModeling(at p: CGPoint) {
         let pick = pick(at: p)
-        guard model.layers.contains(where: { $0.id == model.activeLayerID && $0.isVisible }) else {
+        guard model.editableActiveLayer != nil else {
             NSSound.beep()
             return
         }
@@ -871,7 +872,7 @@ final class StudioViewportSurface: NSView {
             else if !drag.additive { model.clearSelection() }
         } else if drag.moveAxis != nil {
             if allowed { _ = model.moveSelection(by: offset) }
-        } else if let layer = model.layers.first(where: { $0.id == model.activeLayerID && $0.isVisible }) {
+        } else if let layer = model.editableActiveLayer {
             var captured = Set<Cell>()
             for c in layer.cells.keys {
                 let center = V3(Float(c.x) + 0.5, Float(c.y) + 0.5, Float(c.z) + 0.5)
