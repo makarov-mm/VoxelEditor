@@ -119,6 +119,25 @@ final class SceneObjectEditingTests: XCTestCase {
         XCTAssertFalse(model.removeObject(copy.id))
     }
 
+    func testEditingAtDistantDefinitionOriginProducesReadableProject() throws {
+        let model = EditorModel()
+        let origin = Cell(0, 0, 0), layer = VoxelLayer(name: "Lens", cells: [origin: model.ink])
+        let object = SceneObject(name: "Beacon", layerIDs: [layer.id],
+            transform: VoxelTransform(axes: [1, 2, 3], offset: Cell(-Cell.transformOffsetLimit, 0, 0)))
+        let snapshot = ProjectSnapshot(title: "Beacon", layers: [layer], palette: [model.ink], activeLayerID: layer.id,
+                                       voxOrigin: nil, layout: SceneLayout(objects: [object]))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".vxl")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try snapshot.write(to: url)
+        try model.loadProject(from: url)
+        model.apply(hit: origin, adjacent: Cell(1, 0, 0))
+        try model.saveProject(to: url)
+        let reopened = EditorModel()
+        try reopened.loadProject(from: url)
+        XCTAssertEqual(reopened.visibleCells, [origin: model.ink, Cell(1, 0, 0): model.ink])
+        XCTAssertEqual(reopened.sceneLayout.objects, [object])
+    }
+
     func testInvalidGroupAndTransformInFilePreserveOpenScene() throws {
         let (model, obj) = try newObject(at: Cell(3, 2, -5))
         let a = try XCTUnwrap(model.createGroup(name: "Harbor"))

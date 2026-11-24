@@ -166,7 +166,10 @@ private struct ProjectFile: Codable {
             var cells: [Cell: Ink] = [:]
             cells.reserveCapacity(records.count)
             for voxel in records {
-                guard voxel.cell.isSceneCoordinate else { throw ProjectError.invalidProject }
+                // Inverting a valid pose can add the whole grid extent to a local cell address.
+                guard voxel.cell.fitsCoordinateLimit(Cell.transformOffsetLimit + Cell.gridSize) else {
+                    throw ProjectError.invalidProject
+                }
                 let cell = member?.1.apply(voxel.cell) ?? voxel.cell
                 guard cell.inBounds, voxel.ink.isValid,
                       cells.updateValue(voxel.ink, forKey: cell) == nil else {

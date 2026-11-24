@@ -44,7 +44,13 @@ struct VoxelTransform: Equatable, Codable {
 }
 
 extension Cell {
-    var isSceneCoordinate: Bool { [x, y, z].allSatisfy { (-1_000_000...1_000_000).contains($0) } }
+    static let transformOffsetLimit = 1_000_000
+
+    func fitsCoordinateLimit(_ limit: Int) -> Bool {
+        (-limit...limit).contains(x) && (-limit...limit).contains(y) && (-limit...limit).contains(z)
+    }
+
+    var isSceneCoordinate: Bool { fitsCoordinateLimit(Self.transformOffsetLimit) }
 }
 
 struct SceneObject: Identifiable, Equatable, Codable {
