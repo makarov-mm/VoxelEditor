@@ -99,11 +99,15 @@ Try a cut at **Y = 4** in the five-layer cottage project to reveal the table ins
 
 PNG export follows the current cut. Native projects and model exports preserve geometry above it.
 
+## Recover an editing session
+
+Forma writes a local recovery draft in the background while a project has unsaved edits. Changes are collected over a three-second interval, including during long strokes. After an unexpected exit, the next launch shows the draft’s last write time. Choose **Restore** to open it as an unsaved project, **Keep for Later** to leave it for another launch, or **Discard Draft** to remove it. Save the recovered project with **⌘S** and choose its destination.
+
 ## File formats
 
 | Format | Open | Save or export | Contents |
 | --- | --- | --- | --- |
-| Forma project (`.vxl`) | **File → Open…** | **Save** (`⌘S`) or **Save As…** | Editable layers, visibility, voxels, and palette in versioned JSON |
+| Forma project (`.vxl`) | **File → Open…** | **Save** (`⌘S`) or **Save As…** | Editable layers, visibility, locks, voxels, and palette in versioned JSON |
 | MagicaVoxel (`.vox`) | **File → Open…** or **Import MagicaVoxel (.vox)…** | **File → Export MagicaVoxel (.vox)…** | Static models, placement, colors, and supported material metadata |
 | Scene image (`.png`) | — | **File → Export Scene PNG…** (`⇧⌘P`) | Visible layers from the current camera, with the current appearance, floor grid, and edge settings. Editing overlays are omitted. |
 | Wavefront (`.obj` + `.mtl`) | — | **File → Export Wavefront OBJ…** | Mesh of the visible surface and its color materials. Keep the two files together. |

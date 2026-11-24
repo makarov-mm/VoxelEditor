@@ -23,6 +23,9 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     private var subscriptions = Set<AnyCancellable>()
     private var keyMonitor: Any?
     private var approvedClose = false
+    private var recovery: RecoveryController?
+    private var readyToOpen = false
+    private var initialURL: URL?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         configureMenus()
@@ -52,10 +55,57 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        startRecovery()
+        readyToOpen = true
+        if let initialURL {
+            self.initialURL = nil
+            model.openProject(at: initialURL)
+        }
     }
 
     func application(_ sender: NSApplication, open urls: [URL]) {
-        if let url = urls.first { model.openProject(at: url) }
+        guard let url = urls.first else { return }
+        if readyToOpen { model.openProject(at: url) }
+        else { initialURL = url }
+    }
+
+    private func startRecovery() {
+        do {
+            let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                       appropriateFor: nil, create: true)
+            let directory = support.appendingPathComponent("studio.forma.voxel/Recovery", isDirectory: true)
+            var store = try RecoveryStore(directory: directory)
+            if let date = store.savedAt {
+                let alert = NSAlert()
+                alert.messageText = "Restore your last editing session?"
+                alert.informativeText = "Forma saved a recovery draft on " + date.formatted(date: .long, time: .standard)
+                    + ". Restore it as an unsaved project."
+                alert.addButton(withTitle: "Restore")
+                alert.addButton(withTitle: "Keep for Later").keyEquivalent = "\u{1b}"
+                alert.addButton(withTitle: "Discard Draft")
+                switch alert.runModal() {
+                case .alertFirstButtonReturn:
+                    do {
+                        try model.restoreDraft(from: store.draftURL)
+                    } catch {
+                        let failure = NSAlert()
+                        failure.messageText = "Couldn’t restore the draft"
+                        failure.informativeText = error.localizedDescription + "\n" + store.draftURL.path
+                        failure.runModal()
+                        store = try RecoveryStore(directory: directory, includeExisting: false)
+                    }
+                case .alertThirdButtonReturn:
+                    try store.discard()
+                default:
+                    store = try RecoveryStore(directory: directory, includeExisting: false)
+                }
+            }
+            recovery = RecoveryController(model: model, store: store) { [weak ui] error in
+                ui?.recoveryError = error
+            }
+        } catch {
+            ui.recoveryError = error.localizedDescription
+        }
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -70,6 +120,7 @@ private final class StudioDelegate: NSObject, NSApplicationDelegate, NSWindowDel
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        recovery?.stop(discard: true)
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
     }
 

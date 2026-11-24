@@ -11,6 +11,7 @@ final class StudioUI: ObservableObject {
 
     @Published var showingHelp = false
     @Published var showingParts = false
+    @Published var recoveryError: String?
     @Published var selectionNotice: String?
 
     func canPaste(into model: EditorModel) -> Bool {
@@ -290,6 +291,10 @@ struct StudioView: View {
             if model.tool == .select && model.pendingPaste == nil {
                 Text("\(model.selection.count.formatted()) selected").monospacedDigit()
                 Rule(vertical: true).frame(height: 12).padding(.horizontal, 3)
+            }
+            if let error = ui.recoveryError {
+                Label("Recovery unavailable", systemImage: "exclamationmark.triangle")
+                    .help(error).accessibilityLabel("Recovery unavailable. " + error)
             }
             Image(systemName: "cube").font(.system(size: 10))
             Text("\(model.viewportCells.count.formatted()) voxels")

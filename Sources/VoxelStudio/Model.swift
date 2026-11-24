@@ -116,6 +116,13 @@ private struct ProjectFile: Codable {
     var layers: [Layer]
     var voxOrigin: Cell? = nil
 
+    static func read(from url: URL) throws -> (ProjectFile, [VoxelLayer]) {
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        guard data.count <= 256 * 1024 * 1024 else { throw ProjectError.tooLarge }
+        let file = try JSONDecoder().decode(Self.self, from: data)
+        return (file, try file.validatedLayers())
+    }
+
     func validatedLayers() throws -> [VoxelLayer] {
         guard version == Self.currentVersion else { throw ProjectError.unsupportedVersion }
         guard MagicaVoxel.validOrigin(voxOrigin), !layers.isEmpty, layers.count <= EditorModel.layerLimit,
@@ -139,6 +146,29 @@ private struct ProjectFile: Codable {
             return VoxelLayer(id: source.id, name: source.name, isVisible: source.isVisible,
                               isLocked: source.isLocked ?? false, cells: cells)
         }
+    }
+}
+
+// Captured on the main thread. Copy-on-write values can be encoded by the recovery writer.
+struct ProjectSnapshot {
+    let title: String
+    let layers: [VoxelLayer]
+    let palette: [Ink]
+    let activeLayerID: UUID
+    let voxOrigin: Cell?
+
+    func write(to url: URL) throws {
+        let file = ProjectFile(
+            version: ProjectFile.currentVersion, title: title, palette: palette, activeLayerID: activeLayerID,
+            layers: layers.map { layer in
+                let voxels = layer.cells.map { ProjectFile.Voxel(cell: $0.key, ink: $0.value) }
+                return ProjectFile.Layer(id: layer.id, name: layer.name, isVisible: layer.isVisible,
+                                         isLocked: layer.isLocked ? true : nil, voxels: voxels)
+            }, voxOrigin: voxOrigin
+        )
+        let data = try JSONEncoder().encode(file)
+        guard data.count <= 256 * 1024 * 1024 else { throw ProjectError.tooLarge }
+        try data.write(to: url, options: .atomic)
     }
 }
 
@@ -836,14 +866,7 @@ final class EditorModel: ObservableObject {
     }
 
     func loadProject(from url: URL, confirmReplacement: () throws -> Bool) throws {
-        func read() throws -> (ProjectFile, [VoxelLayer]) {
-            let data = try Data(contentsOf: url, options: .mappedIfSafe)
-            guard data.count <= 256 * 1024 * 1024 else { throw ProjectError.tooLarge }
-            let file = try JSONDecoder().decode(ProjectFile.self, from: data)
-            return (file, try file.validatedLayers())
-        }
-
-        var (file, newLayers) = try read()
+        var (file, newLayers) = try ProjectFile.read(from: url)
         let previousSave = savedState
         guard try confirmReplacement() else { return }
         if previousSave != savedState, let savedURL = projectURL {
@@ -854,7 +877,7 @@ final class EditorModel: ObservableObject {
             }
             let savedID = fileID(savedURL), incomingID = fileID(url)
             if savedID == nil || incomingID == nil || savedID?.isEqual(incomingID) == true {
-                (file, newLayers) = try read()
+                (file, newLayers) = try ProjectFile.read(from: url)
             }
         }
         replaceLayers(newLayers, activeID: file.activeLayerID, title: file.title, palette: file.palette,
@@ -886,21 +909,24 @@ final class EditorModel: ObservableObject {
         guard url.pathExtension.lowercased() != "vox" else { throw ProjectError.nativeExtension }
         endStroke()
         let name = url.deletingPathExtension().lastPathComponent
-        let file = ProjectFile(
-            version: ProjectFile.currentVersion, title: name, palette: palette, activeLayerID: activeLayerID,
-            layers: layers.map { layer in
-                let voxels = layer.cells.map { ProjectFile.Voxel(cell: $0.key, ink: $0.value) }
-                return ProjectFile.Layer(id: layer.id, name: layer.name, isVisible: layer.isVisible,
-                                         isLocked: layer.isLocked ? true : nil, voxels: voxels)
-            }, voxOrigin: voxOrigin
-        )
-        let data = try JSONEncoder().encode(file)
-        guard data.count <= 256 * 1024 * 1024 else { throw ProjectError.tooLarge }
-        try data.write(to: url, options: .atomic)
+        try snapshot(named: name).write(to: url)
         projectURL = url
         title = name
         savedState = currentState
         isDirty = false
+    }
+
+    func snapshot(named name: String? = nil) -> ProjectSnapshot {
+        ProjectSnapshot(title: name ?? title, layers: layers, palette: palette,
+                        activeLayerID: activeLayerID, voxOrigin: voxOrigin)
+    }
+
+    func restoreDraft(from url: URL) throws {
+        let (file, layers) = try ProjectFile.read(from: url)
+        replaceLayers(layers, activeID: file.activeLayerID, title: file.title, palette: file.palette,
+                      url: nil, origin: file.voxOrigin)
+        savedState = UUID()
+        isDirty = true
     }
 
     private func show(_ error: Error, title: String) {
